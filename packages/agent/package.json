@@ -1,0 +1,24 @@
+{
+  "name": "@hive/agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/daemon.js",
+  "bin": {
+    "hive-agent": "./dist/daemon.js",
+    "hive-install": "./dist/install.js"
+  },
+  "scripts": {
+    "build": "tsc --build && node -e \"require('node:fs').cpSync('src/hooks','dist/hooks',{recursive:true})\"",
+    "start": "node dist/daemon.js",
+    "install-hooks": "node dist/install.js"
+  },
+  "dependencies": {
+    "@hive/shared": "*",
+    "dotenv": "^16.4.7",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.5.13"
+  }
+}

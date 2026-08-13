@@ -1,0 +1,31 @@
+{
+  "name": "hive",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Control plane for a fleet of Claude Code agents across machines",
+  "type": "module",
+  "workspaces": [
+    "packages/shared",
+    "packages/server",
+    "packages/web",
+    "packages/mcp",
+    "packages/agent"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "dev": "concurrently -n server,web -c cyan,magenta \"npm:dev:server\" \"npm:dev:web\"",
+    "dev:server": "npm run dev --workspace @hive/server",
+    "dev:web": "npm run dev --workspace @hive/web",
+    "migrate": "npm run migrate --workspace @hive/server",
+    "typecheck": "tsc --build --force",
+    "clean": "rm -rf packages/*/dist packages/*/tsconfig.tsbuildinfo"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "concurrently": "^9.1.0",
+    "typescript": "^5.7.2"
+  }
+}

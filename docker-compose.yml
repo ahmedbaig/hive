@@ -1,0 +1,33 @@
+services:
+  hive-server:
+    build: .
+    image: hive-server:latest
+    container_name: hive-server
+    restart: unless-stopped
+    ports:
+      - '7777:7777'
+    environment:
+      HIVE_HOST: 0.0.0.0
+      HIVE_PORT: '7777'
+      # Reachable address other machines use. Change to this host's LAN IP.
+      HIVE_PUBLIC_URL: ${HIVE_PUBLIC_URL:-http://192.168.0.117:7777}
+      # Hive uses its own Redis database index; db 0 on that server belongs to
+      # an unrelated Django/Celery stack and must not be touched.
+      REDIS_HOST: ${REDIS_HOST:-192.168.0.117}
+      REDIS_PORT: ${REDIS_PORT:-6379}
+      REDIS_DB: ${REDIS_DB:-3}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      PGHOST: ${PGHOST:-192.168.0.117}
+      PGPORT: ${PGPORT:-5432}
+      PGDATABASE: ${PGDATABASE:-hive}
+      PGUSER: ${PGUSER:-hive}
+      PGPASSWORD: ${PGPASSWORD:-hive}
+      HIVE_TOKEN: ${HIVE_TOKEN:-}
+      HIVE_PERMISSION_TIMEOUT_MS: ${HIVE_PERMISSION_TIMEOUT_MS:-45000}
+      HIVE_AUTO_ALLOW: ${HIVE_AUTO_ALLOW:-Read,Glob,Grep,TodoWrite,NotebookRead}
+      HIVE_LOG_LEVEL: ${HIVE_LOG_LEVEL:-info}
+    volumes:
+      - hive-uploads:/app/uploads
+
+volumes:
+  hive-uploads:

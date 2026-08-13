@@ -1,0 +1,32 @@
+# Prometheus scrape config for the hive.
+#
+# Point `targets` at wherever hive-server listens. The endpoint is
+# unauthenticated by design — it exposes operational metadata (agent names,
+# tool names, counts), never message bodies or tool arguments.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    monitor: hive
+
+rule_files:
+  - alerts.yml
+
+scrape_configs:
+  - job_name: hive
+    metrics_path: /metrics
+    # The collector refreshes gauges from Redis on each scrape, so keep the
+    # interval sane rather than hammering it at 1s.
+    scrape_interval: 15s
+    scrape_timeout: 10s
+    static_configs:
+      - targets:
+          - '192.168.0.117:7777'
+        labels:
+          fleet: home
+    relabel_configs:
+      # `instance` defaults to host:port; a readable name is nicer in Grafana.
+      - source_labels: [__address__]
+        target_label: instance
+        replacement: hive-server

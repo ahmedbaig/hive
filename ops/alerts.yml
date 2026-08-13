@@ -1,0 +1,97 @@
+groups:
+  - name: hive-fleet
+    rules:
+      - alert: HiveServerDown
+        expr: up{job="hive"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: hive-server is not being scraped
+          description: >-
+            No agent can register, chat, or have a tool call approved while the
+            control plane is down. Permission hooks fail open to `ask`, so
+            sessions fall back to local terminal prompts.
+
+      - alert: HiveRedisDown
+        expr: hive_redis_up == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: hive cannot reach Redis
+          description: Presence, streams and the permission gate all depend on Redis.
+
+      - alert: HivePostgresDown
+        expr: hive_postgres_up == 0
+        for: 5m
+        labels:
+          severity: warning
+          annotations_note: degraded-not-broken
+        annotations:
+          summary: hive persistence is disabled
+          description: >-
+            The fleet keeps running on Redis alone, but message and event
+            history is capped by stream trimming and lost on a Redis restart.
+
+      - alert: HiveApprovalWaiting
+        expr: hive_permission_oldest_pending_seconds > 30
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: a tool call has been waiting {{ $value | humanizeDuration }} for approval
+          description: >-
+            An agent is blocked. The hook gives up at 45s and falls back to the
+            local terminal prompt, so this needs a human within seconds, not
+            minutes.
+
+      - alert: HiveKillSwitchEngaged
+        expr: hive_killswitch_engaged == 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: fleet kill switch has been engaged for 5 minutes
+          description: Every tool call across every machine is being denied.
+
+      - alert: HiveAgentOffline
+        expr: hive_agent_up == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: agent {{ $labels.agent }} has been offline for 5 minutes
+          description: Its heartbeat expired — the daemon or the machine is down.
+
+      - alert: HiveToolErrorRate
+        expr: >-
+          sum by (agent) (rate(hive_tool_calls_total{result="error"}[10m]))
+          /
+          sum by (agent) (rate(hive_tool_calls_total[10m])) > 0.3
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: '{{ $labels.agent }} is failing >30% of its tool calls'
+          description: Usually a broken working tree, missing dependency, or a wedged session.
+
+      - alert: HivePermissionTimeouts
+        expr: rate(hive_permission_requests_total{status="expired"}[15m]) > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: approvals are timing out unattended
+          description: >-
+            Requests are expiring rather than being decided. Either nobody is
+            watching the dashboard, or HIVE_PERMISSION_TIMEOUT_MS is too tight.
+
+      - alert: HivePersistenceFailing
+        expr: rate(hive_persistence_writes_total{result="error"}[10m]) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: hive is failing to write history to Postgres
+          description: Live traffic is unaffected; durable history is being lost.

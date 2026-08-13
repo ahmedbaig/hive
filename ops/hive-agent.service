@@ -1,0 +1,42 @@
+# Hive agent daemon — one per machine.
+#
+#   sudo cp ops/hive-agent.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now hive-agent
+#   journalctl -u hive-agent -f
+#
+# Edit User, WorkingDirectory, ExecStart and the HIVE_* values for the host.
+
+[Unit]
+Description=Hive agent daemon (Claude fleet)
+Documentation=https://github.com/your-org/hive
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=%i
+WorkingDirectory=/opt/hive
+ExecStart=/usr/bin/node /opt/hive/packages/agent/dist/daemon.js
+
+Environment=HIVE_URL=http://192.168.0.117:7777
+Environment=HIVE_AGENT_NAME=%H
+# Directory the daemon runs woken sessions and chat replies in.
+Environment=HIVE_WAKE_CWD=/opt/work
+# Set to 0 on a machine that should listen and chat but never auto-spawn runs.
+Environment=HIVE_WAKE_ENABLED=1
+# Set to 0 to keep this machine's CLAUDE.md and memory files private.
+Environment=HIVE_MEMORY_SYNC=1
+
+Restart=always
+RestartSec=5
+# The daemon spawns Claude sessions, so it must not be memory-starved, but a
+# runaway should still be contained rather than taking the machine down.
+MemoryMax=4G
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hive-agent
+
+[Install]
+WantedBy=multi-user.target
