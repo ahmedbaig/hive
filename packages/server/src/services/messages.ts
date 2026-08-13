@@ -105,11 +105,16 @@ export async function postMessage(draft: MessageDraft, author: Author): Promise<
  * A reply inherits its parent's depth plus one; an agent message that threads
  * off nothing starts its own chain at 1. Resolved here rather than trusted from
  * the request so a daemon cannot keep a conversation alive by claiming depth 0.
+ *
+ * A parent that cannot be resolved fails closed. Treating it as depth 0 would
+ * restart the chain on every unresolvable id, which is the one input an agent
+ * still controls, so the loop guard would never bite.
  */
 async function nextHopDepth(replyTo: string | null): Promise<number> {
   if (!replyTo) return 1;
   const [parent] = await hydrate([replyTo]);
-  return (parent?.hopDepth ?? 0) + 1;
+  if (!parent) return config.orphanHopDepth;
+  return parent.hopDepth + 1;
 }
 
 /** Chronological page. Postgres when present, Redis stream as the fallback. */

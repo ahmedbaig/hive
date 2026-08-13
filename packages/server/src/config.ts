@@ -39,6 +39,8 @@ const Env = z.object({
   HIVE_LOG_LEVEL: z.string().default('info'),
   /** Agents whose heartbeat is older than this are marked offline. */
   HIVE_PRESENCE_TTL_MS: z.coerce.number().int().default(30_000),
+  /** Mirrors the daemon's own hop limit; keep the two in sync. */
+  HIVE_MAX_HOPS: z.coerce.number().int().positive().default(4),
 });
 
 const parsed = Env.parse(process.env);
@@ -87,6 +89,13 @@ export const config = {
 
   /** Stream retention. Redis is the hot cache; Postgres holds the long tail. */
   streamMaxLen: 5_000,
+
+  /**
+   * Depth assigned to an agent reply whose parent cannot be resolved. Set at
+   * the daemon hop limit so an unresolvable parent ends the chain rather than
+   * restarting it.
+   */
+  orphanHopDepth: parsed.HIVE_MAX_HOPS,
 } as const;
 
 export type Config = typeof config;
