@@ -133,7 +133,13 @@ async function say(channelId: string | null, body: string): Promise<void> {
 /* ── Conversational replies ──────────────────────────────────────────────── */
 
 const REPLY_ENABLED = process.env.HIVE_REPLY !== '0';
-const REPLY_TIMEOUT_MS = Number(process.env.HIVE_REPLY_TIMEOUT_MS || 180_000);
+/**
+ * Wall-clock cap on a reply turn. `0` (the default) means no cap: a reply runs
+ * until it finishes or until the operator issues a `stop` command. A killed run
+ * posts nothing, so capping a turn that is legitimately doing tool work only
+ * makes the agent look mute.
+ */
+const REPLY_TIMEOUT_MS = Number(process.env.HIVE_REPLY_TIMEOUT_MS || 0);
 /** Channels the agent answers in even without being named. */
 const REPLY_CHANNELS = (process.env.HIVE_REPLY_CHANNELS || 'lobby,ops')
   .split(',')
@@ -142,38 +148,146 @@ const REPLY_CHANNELS = (process.env.HIVE_REPLY_CHANNELS || 'lobby,ops')
 
 let replying = false;
 
+/* ── Loop guards ─────────────────────────────────────────────────────────── */
+
 /**
- * Decide whether a chat message is addressed to this machine.
+ * How deep an agent-to-agent chain may run before daemons stop answering.
  *
- * Two rules keep the fleet from talking itself into an infinite loop: never
- * answer our own messages, and only answer another *agent* when it names us
- * explicitly. Humans get answered in the general channels without ceremony,
- * which is what makes the dashboard feel like a chat rather than a log.
+ * Four hops covers a question, an answer, a counter and a close; past that a
+ * pair is restating rather than converging. Depth is chain-local, not a global
+ * counter, and a human post always starts a fresh chain at 0 — so the operator
+ * can continue a capped thread just by replying to it.
  */
-function shouldReply(message: {
+const MAX_HOPS = Number(process.env.HIVE_MAX_HOPS || 4);
+/**
+ * Minimum gap between two replies to the *same* peer, whatever chain they are
+ * on. Catches the case the hop counter cannot see: two agents opening a new
+ * chain at each other over and over.
+ */
+const PEER_COOLDOWN_MS = Number(process.env.HIVE_PEER_COOLDOWN_MS || 20_000);
+/**
+ * Backstop ceiling on agent-triggered replies per channel per window. Nothing
+ * should reach it if the two guards above hold; if it fires, they did not.
+ */
+const REPLY_BUDGET = Number(process.env.HIVE_REPLY_BUDGET || 8);
+const REPLY_BUDGET_WINDOW_MS = Number(process.env.HIVE_REPLY_BUDGET_WINDOW_MS || 600_000);
+
+/** peer agent id → when we last answered it. */
+const lastReplyToPeer = new Map<string, number>();
+/** channel id → timestamps of recent agent-triggered replies in that channel. */
+const replyBudget = new Map<string, number[]>();
+
+/** Agent-triggered replies made in this channel inside the current window. */
+function budgetSpent(channelId: string): number {
+  const cutoff = Date.now() - REPLY_BUDGET_WINDOW_MS;
+  const recent = (replyBudget.get(channelId) ?? []).filter((t) => t > cutoff);
+  replyBudget.set(channelId, recent);
+  return recent.length;
+}
+
+/** Charge one agent-triggered reply against the guards. */
+function chargeGuards(peerId: string, channelId: string): void {
+  const now = Date.now();
+  lastReplyToPeer.set(peerId, now);
+  replyBudget.set(channelId, [...(replyBudget.get(channelId) ?? []), now]);
+}
+
+interface ChatMessage {
+  id: string;
   authorId: string;
   authorType: string;
+  authorName: string;
   channelId: string;
   mentions: string[];
   kind: string;
   body: string;
-}): boolean {
-  if (!REPLY_ENABLED) return false;
-  if (message.authorId === agentId) return false;
+  hopDepth: number;
+}
+
+/**
+ * Why this daemon did or did not answer. Reported as a `chat.reply` event so
+ * the guards are observable — a guard you cannot graph is a guard you cannot
+ * tune, and "the fleet went quiet" and "the fleet never saw it" look identical
+ * from the outside.
+ */
+interface ReplyDecision {
+  reply: boolean;
+  reason: string;
+  /** Silent reasons are ordinary traffic, not worth an event per message. */
+  report: boolean;
+}
+
+/**
+ * Decide whether a chat message is addressed to this machine.
+ *
+ * Humans get answered in the general channels without ceremony. Another agent
+ * is answered only when it names us *and* the chain is still short, still
+ * cool, and still inside the channel budget — three independent limits, so no
+ * single bug can hand two daemons an unbounded conversation.
+ */
+function shouldReply(message: ChatMessage): ReplyDecision {
+  if (!REPLY_ENABLED) return { reply: false, reason: 'disabled', report: false };
+  if (message.authorId === agentId) return { reply: false, reason: 'self', report: false };
   // `result` messages are our own transcript and wake output coming back.
-  if (message.kind !== 'text') return false;
+  if (message.kind !== 'text') return { reply: false, reason: 'not_text', report: false };
 
   const named =
     message.mentions.includes(agentId) ||
     message.mentions.some((m) => m.toLowerCase() === AGENT_NAME.toLowerCase());
-  if (named) return true;
-  if (message.authorType === 'agent') return false; // agents must name us
-  if (message.mentions.includes('@all')) return true;
+
+  if (message.authorType === 'agent') {
+    if (!named) return { reply: false, reason: 'agent_not_named', report: false };
+    if (message.hopDepth >= MAX_HOPS)
+      return { reply: false, reason: 'hop_limit', report: true };
+    const since = Date.now() - (lastReplyToPeer.get(message.authorId) ?? 0);
+    if (since < PEER_COOLDOWN_MS)
+      return { reply: false, reason: 'peer_cooldown', report: true };
+    if (budgetSpent(message.channelId) >= REPLY_BUDGET)
+      return { reply: false, reason: 'budget', report: true };
+    return { reply: true, reason: 'agent_named', report: true };
+  }
+
+  if (named) return { reply: true, reason: 'named', report: true };
+  if (message.mentions.includes('@all')) return { reply: true, reason: 'all', report: true };
 
   // Human message in a general channel with nobody else named: answer it.
   const channelName = channelNames.get(message.channelId) ?? message.channelId;
   const addressedToSomeoneElse = message.mentions.length > 0;
-  return !addressedToSomeoneElse && REPLY_CHANNELS.includes(channelName);
+  if (!addressedToSomeoneElse && REPLY_CHANNELS.includes(channelName))
+    return { reply: true, reason: 'open_channel', report: true };
+  return { reply: false, reason: 'not_addressed', report: false };
+}
+
+/**
+ * Report a reply decision as telemetry. Best-effort: a metrics post must never
+ * be the reason a chat reply fails.
+ */
+async function reportDecision(
+  decision: 'answered' | 'failed' | 'suppressed',
+  message: ChatMessage,
+  reason: string,
+  durationMs?: number,
+): Promise<void> {
+  try {
+    await fetch(`${HIVE_URL}/api/events`, {
+      method: 'POST',
+      headers: headers(),
+      body: JSON.stringify({
+        agentId,
+        agentName: AGENT_NAME,
+        type: 'chat.reply',
+        subject: decision,
+        detail: {
+          reason,
+          hopDepth: message.hopDepth,
+          peerType: message.authorType,
+          ...(durationMs === undefined ? {} : { durationMs }),
+        },
+      }),
+    });
+  } catch {
+    /* telemetry is not load-bearing */
+  }
 }
 
 /** channelId → name, so reply rules can be written against readable names. */
@@ -195,20 +309,29 @@ async function loadChannelNames(): Promise<void> {
  * result back into the same channel.
  *
  * The prompt carries recent channel history so the reply has context, and the
- * run is capped: one at a time, with a hard timeout, so a wedged turn cannot
- * pin the machine or flood the channel.
+ * run is capped to one at a time so a wedged turn cannot flood the channel.
+ *
+ * Replies are posted as `replyTo` the message that prompted them, which is what
+ * lets the server compute chain depth — without it every agent post would look
+ * like a fresh chain and the hop guard would never bite.
  */
-async function replyToMessage(message: {
-  channelId: string;
-  authorName: string;
-  body: string;
-}): Promise<void> {
+async function replyToMessage(message: ChatMessage, reason: string): Promise<void> {
   if (replying) {
     log('reply skipped, already answering');
+    void reportDecision('suppressed', message, 'busy');
+    // Uncapped turns can run for a while; say so instead of going quiet, or the
+    // operator cannot tell "busy" from "ignored".
+    await postTo(
+      message.channelId,
+      `${AGENT_NAME}: still on the previous turn — send \`stop\` to cut it short.`,
+      message.id,
+    );
     return;
   }
   replying = true;
+  if (message.authorType === 'agent') chargeGuards(message.authorId, message.channelId);
   await heartbeat('working', `answering ${message.authorName}`);
+  const startedAt = Date.now();
 
   try {
     const history = await recentHistory(message.channelId);
@@ -223,15 +346,27 @@ async function replyToMessage(message: {
       ``,
       `Reply directly and concisely as a chat message. Do not greet or sign off.`,
       `You may use your tools to check things on this machine before answering.`,
+      ...(message.authorType === 'agent'
+        ? [
+            ``,
+            `This is hop ${message.hopDepth + 1} of ${MAX_HOPS} in an agent-to-agent thread:`,
+            `daemons stop answering at the limit, so make your point now rather than`,
+            `deferring it to a next turn that may never happen. If you and the other`,
+            `agent already agree, say so once and stop instead of restating it.`,
+          ]
+        : []),
     ].join('\n');
 
     const answer = await runClaude(prompt, REPLY_TIMEOUT_MS);
-    await postTo(message.channelId, answer || '(no output)');
+    await postTo(message.channelId, answer || '(no output)', message.id);
+    void reportDecision('answered', message, reason, Date.now() - startedAt);
   } catch (err) {
     await postTo(
       message.channelId,
       `⚠️ ${AGENT_NAME} could not answer: ${err instanceof Error ? err.message : String(err)}`,
+      message.id,
     );
+    void reportDecision('failed', message, reason, Date.now() - startedAt);
   } finally {
     replying = false;
     await heartbeat('idle', null);
@@ -257,19 +392,27 @@ async function recentHistory(channelId: string, limit = 12): Promise<string> {
   }
 }
 
-async function postTo(channelId: string, body: string): Promise<void> {
+/**
+ * Post into a channel. `replyTo` threads the post onto an existing message,
+ * which is how the server derives the chain depth the loop guards run on.
+ */
+async function postTo(channelId: string, body: string, replyTo?: string): Promise<void> {
   try {
     await fetch(`${HIVE_URL}/api/channels/${encodeURIComponent(channelId)}/messages`, {
       method: 'POST',
       headers: headers(),
-      body: JSON.stringify({ body, kind: 'text' }),
+      body: JSON.stringify({ body, kind: 'text', replyTo: replyTo ?? null }),
     });
   } catch (err) {
     log('reply post failed', { err: err instanceof Error ? err.message : String(err) });
   }
 }
 
-/** Run `claude -p` and return its text, killed hard if it overruns. */
+/**
+ * Run `claude -p` and return its text. With `timeoutMs` at 0 the run is
+ * uncapped and only a `stop` command (or shutdown) ends it early; a positive
+ * value kills it and returns whatever was printed before the kill.
+ */
 function runClaude(prompt: string, timeoutMs: number): Promise<string> {
   return new Promise((resolve, reject) => {
     const child = spawn(CLAUDE_BIN, ['-p', prompt], {
@@ -298,21 +441,34 @@ function runClaude(prompt: string, timeoutMs: number): Promise<string> {
       if (err.length < 4_000) err += c.toString('utf8');
     });
 
-    const timer = setTimeout(() => {
-      child.kill('SIGKILL');
-      reject(new Error(`timed out after ${Math.round(timeoutMs / 1000)}s`));
-    }, timeoutMs);
+    let timedOut = false;
+    const timer =
+      timeoutMs > 0
+        ? setTimeout(() => {
+            timedOut = true;
+            child.kill('SIGTERM');
+            setTimeout(() => child.kill('SIGKILL'), 5_000).unref();
+          }, timeoutMs)
+        : null;
 
     child.on('error', (spawnErr) => {
-      clearTimeout(timer);
+      if (timer) clearTimeout(timer);
       running = null;
       reject(spawnErr);
     });
     child.on('close', (code) => {
-      clearTimeout(timer);
+      if (timer) clearTimeout(timer);
       running = null;
-      if (code === 0) resolve(out.trim().slice(0, 8_000));
-      else reject(new Error(err.trim().slice(0, 500) || `claude exited ${code}`));
+      const text = out.trim().slice(0, 8_000);
+      if (code === 0) {
+        resolve(text);
+      } else if (text) {
+        // Stopped or killed mid-turn: post the partial answer rather than
+        // swallowing the work and reporting only a failure.
+        resolve(`${text}\n\n_(run ended early${timedOut ? ' on timeout' : ''})_`);
+      } else {
+        reject(new Error(err.trim().slice(0, 500) || `claude exited ${code}`));
+      }
     });
   });
 }
@@ -476,9 +632,22 @@ function connect(): void {
     if (frame.t === 'welcome') {
       for (const channel of frame.channels) channelNames.set(channel.id, channel.name);
     }
-    if (frame.t === 'message' && shouldReply(frame.message)) {
-      log('answering chat', { from: frame.message.authorName });
-      void replyToMessage(frame.message);
+    if (frame.t === 'message') {
+      const message = frame.message as ChatMessage;
+      // A human joining the thread clears the channel backstop: the operator is
+      // steering again, and their turn should never inherit an agent's budget.
+      if (message.authorType !== 'agent') replyBudget.delete(message.channelId);
+
+      const decision = shouldReply(message);
+      if (decision.reply) {
+        log('answering chat', { from: message.authorName, hop: message.hopDepth });
+        void replyToMessage(message, decision.reason);
+      } else {
+        if (decision.report) {
+          log('reply suppressed', { from: message.authorName, reason: decision.reason });
+          void reportDecision('suppressed', message, decision.reason);
+        }
+      }
     }
   });
 

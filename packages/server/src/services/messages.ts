@@ -2,7 +2,7 @@ import { type Attachment, ID, K, Message, type MessageDraft } from '@hive/shared
 import { config } from '../config.js';
 import { query, queueWrite } from '../db.js';
 import { broadcast } from '../hub.js';
-import { messagesPosted } from '../metrics.js';
+import { messageHopDepth, messagesPosted } from '../metrics.js';
 import { redis } from '../redis.js';
 import { resolveChannel } from './channels.js';
 
@@ -33,6 +33,7 @@ export async function postMessage(draft: MessageDraft, author: Author): Promise<
     body: draft.body,
     replyTo: draft.replyTo ?? null,
     mentions: draft.mentions ?? [],
+    hopDepth: author.type === 'agent' ? await nextHopDepth(draft.replyTo ?? null) : 0,
     attachments: (draft.attachments ?? []) as Attachment[],
     kind: draft.kind ?? 'text',
     meta: draft.meta ?? {},
@@ -71,11 +72,12 @@ export async function postMessage(draft: MessageDraft, author: Author): Promise<
     author_type: message.authorType,
     kind: message.kind,
   });
+  messageHopDepth.observe({ author_type: message.authorType }, message.hopDepth);
 
   queueWrite(
     `insert into messages
-       (id, channel_id, ts, author_type, author_id, author_name, body, reply_to, mentions, attachments, kind, meta)
-     values ($1,$2, to_timestamp($3/1000.0), $4,$5,$6,$7,$8,$9,$10,$11,$12)
+       (id, channel_id, ts, author_type, author_id, author_name, body, reply_to, mentions, attachments, kind, meta, hop_depth)
+     values ($1,$2, to_timestamp($3/1000.0), $4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
      on conflict (id) do nothing`,
     [
       message.id,
@@ -90,10 +92,24 @@ export async function postMessage(draft: MessageDraft, author: Author): Promise<
       JSON.stringify(message.attachments),
       message.kind,
       message.meta,
+      message.hopDepth,
     ],
   );
 
   return message;
+}
+
+/**
+ * Depth of the chain a new agent message continues.
+ *
+ * A reply inherits its parent's depth plus one; an agent message that threads
+ * off nothing starts its own chain at 1. Resolved here rather than trusted from
+ * the request so a daemon cannot keep a conversation alive by claiming depth 0.
+ */
+async function nextHopDepth(replyTo: string | null): Promise<number> {
+  if (!replyTo) return 1;
+  const [parent] = await hydrate([replyTo]);
+  return (parent?.hopDepth ?? 0) + 1;
 }
 
 /** Chronological page. Postgres when present, Redis stream as the fallback. */
@@ -113,6 +129,7 @@ export async function listMessages(channelId: string, limit = 100): Promise<Mess
     attachments: unknown;
     kind: string;
     meta: Record<string, unknown>;
+    hop_depth: number | null;
   }>(
     `select * from messages where channel_id = $1 order by ts desc limit $2`,
     [channelId, capped],
@@ -134,6 +151,7 @@ export async function listMessages(channelId: string, limit = 100): Promise<Mess
           attachments: typeof r.attachments === 'string' ? JSON.parse(r.attachments) : (r.attachments ?? []),
           kind: r.kind,
           meta: r.meta ?? {},
+          hopDepth: r.hop_depth ?? 0,
         }),
       )
       .reverse();
@@ -198,6 +216,7 @@ async function hydrate(ids: string[]): Promise<Message[]> {
           attachments: p.attachments ?? [],
           kind: p.kind,
           meta: p.meta ?? {},
+          hopDepth: p.hop_depth ?? 0,
         });
       })
       .filter((r) => r.success)

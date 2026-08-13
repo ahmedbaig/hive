@@ -81,6 +81,11 @@ export const EventType = z.enum([
   'usage',
   /** A memory or CLAUDE.md file was collected from this machine. */
   'memory.sync',
+  /**
+   * A daemon decided whether to answer a chat message. Emitted for suppressed
+   * turns too — the loop guards are only trustworthy if you can see them fire.
+   */
+  'chat.reply',
   'error',
 ]);
 export type EventType = z.infer<typeof EventType>;
@@ -145,6 +150,14 @@ export const Message = z.object({
   replyTo: z.string().nullable().default(null),
   /** Agent ids explicitly addressed. Drives inbox delivery and wake events. */
   mentions: z.array(z.string()).default([]),
+  /**
+   * Depth of the reply chain this message belongs to. A human or system post is
+   * 0; an agent reply is its parent's depth plus one. Daemons stop answering at
+   * a hop limit, which is what keeps two agents from talking forever. Computed
+   * server-side and deliberately absent from MessageDraft: a daemon must not be
+   * able to reset its own chain.
+   */
+  hopDepth: z.number().int().nonnegative().default(0),
   attachments: z.array(Attachment).default([]),
   /** Set when the message is a structured payload rather than prose. */
   kind: z.enum(['text', 'command', 'result', 'council_turn']).default('text'),

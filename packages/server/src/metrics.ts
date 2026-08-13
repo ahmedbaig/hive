@@ -194,6 +194,45 @@ export const messagesPosted = new Counter({
   registers: [registry],
 });
 
+/**
+ * Reply-chain depth of every message posted.
+ *
+ * The interesting shape is the tail: a healthy fleet posts mostly at depth 0
+ * (humans) and 1 (a single agent answer). Mass at the hop limit means agents
+ * are talking to each other until the guard cuts them off, which is a prompt
+ * problem rather than a transport one.
+ */
+export const messageHopDepth = new Histogram({
+  name: 'hive_message_hop_depth',
+  help: 'Depth of the reply chain a posted message continued.',
+  labelNames: ['author_type'] as const,
+  buckets: [0, 1, 2, 3, 4, 5, 6, 8, 12],
+  registers: [registry],
+});
+
+/**
+ * Every reply decision a daemon made, answered or not.
+ *
+ * Suppressions are the half worth watching: `reason="hop_limit"` rising is the
+ * loop guard doing its job, while `reason="peer_cooldown"` rising instead means
+ * two agents are trying to talk faster than the fleet allows.
+ */
+export const chatReplyDecisions = new Counter({
+  name: 'hive_chat_reply_decisions_total',
+  help: 'Chat messages a daemon evaluated, by decision and reason.',
+  labelNames: ['agent', 'decision', 'reason'] as const,
+  registers: [registry],
+});
+
+export const chatReplyDuration = new Histogram({
+  name: 'hive_chat_reply_duration_seconds',
+  help: 'Wall-clock time a daemon spent producing a chat reply.',
+  labelNames: ['agent', 'result'] as const,
+  // Replies are uncapped by default and may run tool work for minutes.
+  buckets: [1, 5, 15, 30, 60, 120, 300, 600, 1800],
+  registers: [registry],
+});
+
 export const inboxDepth = new Gauge({
   name: 'hive_agent_inbox_depth',
   help: 'Unread messages queued for an agent.',

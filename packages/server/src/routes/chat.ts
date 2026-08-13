@@ -77,9 +77,11 @@ export async function chatRoutes(app: FastifyInstance): Promise<void> {
     }
 
     const actor = actorFrom(req);
-    // Mentions may name agents rather than ids; resolve so delivery works
-    // whichever the caller used.
-    const mentions = await resolveMentions(parsed.data.mentions);
+    // Mentions may name agents rather than ids, and may only exist as `@name`
+    // in the prose; resolve both so delivery works whichever the caller used.
+    const mentions = await resolveMentions(
+      mentionsFrom(parsed.data.body, parsed.data.mentions),
+    );
 
     try {
       const message = await postMessage(
@@ -123,15 +125,33 @@ export async function chatRoutes(app: FastifyInstance): Promise<void> {
   });
 }
 
+/** `@name`, not preceded by a word character so emails do not become mentions. */
+const MENTION_RE = /(?:^|[^\w@])@([\w.-]+)/g;
+
+/**
+ * Union of the caller's explicit mentions and any `@name` in the body.
+ *
+ * The web client extracts mentions before posting, but agent daemons post raw
+ * prose — without this, one agent naming another in a sentence was never
+ * delivered, so agents could only ever answer the human.
+ */
+function mentionsFrom(body: string, explicit: string[]): string[] {
+  const inline = [...body.matchAll(MENTION_RE)].map((m) => m[1] ?? '');
+  return [...new Set([...explicit, ...inline].filter(Boolean))];
+}
+
 async function resolveMentions(mentions: string[]): Promise<string[]> {
   if (mentions.length === 0) return [];
   const needsLookup = mentions.some((m) => m !== '@all' && !m.startsWith('agt_'));
-  if (!needsLookup) return mentions;
+  if (!needsLookup) return [...new Set(mentions)];
 
   const agents = await listAgents();
-  return mentions.map((mention) => {
+  const resolved = mentions.map((mention) => {
     if (mention === '@all' || mention.startsWith('agt_')) return mention;
     const bare = mention.startsWith('@') ? mention.slice(1) : mention;
-    return agents.find((a) => a.name === bare)?.id ?? mention;
+    const lower = bare.toLowerCase();
+    return agents.find((a) => a.name.toLowerCase() === lower)?.id ?? mention;
   });
+  // `@macmini` and `macmini` both resolve to one id; fanout must not double.
+  return [...new Set(resolved)];
 }

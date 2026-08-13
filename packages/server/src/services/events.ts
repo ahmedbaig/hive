@@ -6,6 +6,8 @@ import {
   agentPrompts,
   agentSessions,
   agentTurns,
+  chatReplyDecisions,
+  chatReplyDuration,
   eventsIngested,
   tokensUsed,
   toolCalls,
@@ -72,6 +74,19 @@ export async function recordEvent(
  */
 const turnStartedAt = new Map<string, number>();
 
+/** Label allowlists for `chat.reply`. Kept in step with the daemon's guards. */
+const REPLY_DECISIONS = new Set(['answered', 'failed', 'suppressed']);
+const REPLY_REASONS = new Set([
+  'named',
+  'all',
+  'open_channel',
+  'agent_named',
+  'hop_limit',
+  'peer_cooldown',
+  'budget',
+  'busy',
+]);
+
 /** Translate an event into Prometheus counters as it is recorded. */
 function observe(event: HiveEvent): void {
   eventsIngested.inc({ agent: event.agentId, type: event.type });
@@ -91,6 +106,23 @@ function observe(event: HiveEvent): void {
     case 'session.start':
       agentSessions.inc({ agent: event.agentId });
       return;
+    case 'chat.reply': {
+      // Daemon-reported strings become label values, so both are pinned to a
+      // known set — otherwise a bad build could mint unbounded series.
+      const decision = REPLY_DECISIONS.has(event.subject ?? '')
+        ? (event.subject as string)
+        : 'unknown';
+      const raw = event.detail.reason;
+      const reason =
+        typeof raw === 'string' && REPLY_REASONS.has(raw) ? raw : 'unknown';
+      chatReplyDecisions.inc({ agent: event.agentId, decision, reason });
+
+      const ms = event.detail.durationMs;
+      if (typeof ms === 'number' && ms >= 0) {
+        chatReplyDuration.observe({ agent: event.agentId, result: decision }, ms / 1000);
+      }
+      return;
+    }
     case 'usage': {
       const model = event.subject ?? 'unknown';
       const kinds = {
