@@ -41,6 +41,14 @@ const Env = z.object({
   HIVE_PRESENCE_TTL_MS: z.coerce.number().int().default(30_000),
   /** Mirrors the daemon's own hop limit; keep the two in sync. */
   HIVE_MAX_HOPS: z.coerce.number().int().positive().default(4),
+  /**
+   * Rolling window the stats view reports spend over. Five hours matches the
+   * shape of Anthropic's own rolling limit so the number is comparable, but it
+   * is derived from observed spend — see services/stats.ts.
+   */
+  HIVE_USAGE_WINDOW_MS: z.coerce.number().int().positive().default(5 * 60 * 60 * 1_000),
+  /** Files at or below this size, with a text mime, are stored inline in Postgres. */
+  HIVE_INLINE_FILE_BYTES: z.coerce.number().int().nonnegative().default(64 * 1024),
 });
 
 const parsed = Env.parse(process.env);
@@ -86,6 +94,8 @@ export const config = {
 
   uploadDir,
   presenceTtlMs: parsed.HIVE_PRESENCE_TTL_MS,
+  usageWindowMs: parsed.HIVE_USAGE_WINDOW_MS,
+  inlineFileBytes: parsed.HIVE_INLINE_FILE_BYTES,
 
   /** Stream retention. Redis is the hot cache; Postgres holds the long tail. */
   streamMaxLen: 5_000,

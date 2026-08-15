@@ -78,3 +78,34 @@ export function avatarColor(name: string): string {
 export function truncate(value: string, max: number): string {
   return value.length > max ? `${value.slice(0, max)}…` : value;
 }
+
+/**
+ * Token counts, shortened.
+ *
+ * Six-digit numbers in a stat tile are unreadable at a glance and change width
+ * as they grow, which makes a row of them jitter. `1.2M` does not.
+ */
+export function compact(value: number): string {
+  if (!Number.isFinite(value)) return '—';
+  const abs = Math.abs(value);
+  if (abs < 1_000) return String(Math.round(value));
+  if (abs < 1_000_000) return `${(value / 1_000).toFixed(abs < 10_000 ? 1 : 0)}k`;
+  if (abs < 1_000_000_000) return `${(value / 1_000_000).toFixed(abs < 10_000_000 ? 1 : 0)}M`;
+  return `${(value / 1_000_000_000).toFixed(1)}B`;
+}
+
+/** Coarse countdown: `4h 12m`, `12m`, `40s`. Never negative. */
+export function duration(ms: number): string {
+  const total = Math.max(0, Math.round(ms / 1000));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const seconds = total % 60;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  if (minutes > 0) return `${minutes}m`;
+  return `${seconds}s`;
+}
+
+export function percent(part: number, whole: number): number {
+  if (!whole) return 0;
+  return Math.min(100, Math.max(0, Math.round((part / whole) * 100)));
+}

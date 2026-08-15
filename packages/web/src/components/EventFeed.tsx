@@ -86,7 +86,7 @@ export function EventFeed({ agentFilter }: { agentFilter: string | null }): JSX.
           <span className="feed-time">{clockSeconds(event.ts)}</span>
           <span className="feed-type">{event.type}</span>
           <span className="feed-detail">
-            <strong style={{ color: 'var(--text)' }}>{event.agentName}</strong>
+            <strong style={{ color: 'var(--fg)' }}>{event.agentName}</strong>
             {event.subject ? ` · ${event.subject}` : ''}
             {describe(event.detail)}
           </span>

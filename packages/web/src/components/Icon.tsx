@@ -36,7 +36,22 @@ export type IconName =
   | 'clock'
   | 'alert'
   | 'cpu'
-  | 'users';
+  | 'users'
+  | 'menu'
+  | 'archive'
+  | 'trash'
+  | 'edit'
+  | 'bell'
+  | 'bell-off'
+  | 'volume'
+  | 'volume-off'
+  | 'gauge'
+  | 'chevron'
+  | 'more'
+  | 'moon'
+  | 'settings'
+  | 'arrow-down'
+  | 'undo';
 
 const PATHS: Record<IconName, JSX.Element> = {
   chat: <path d="M21 11.5a8.4 8.4 0 0 1-9 8.4 9 9 0 0 1-3.8-.8L3 21l1.9-5.1A8.4 8.4 0 0 1 4 11.5a8.5 8.5 0 0 1 8.5-8.4A8.4 8.4 0 0 1 21 11.5Z" />,
@@ -74,6 +89,26 @@ const PATHS: Record<IconName, JSX.Element> = {
   alert: <path d="M12 3 2 20h20L12 3ZM12 10v4M12 17.5v.5" />,
   cpu: <path d="M6 6h12v12H6zM9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3" />,
   users: <path d="M16 20v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M9 10a4 4 0 1 0 0-8 4 4 0 0 0 0 8ZM22 20v-2a4 4 0 0 0-3-3.9M16 2.1a4 4 0 0 1 0 7.8" />,
+  menu: <path d="M3 6h18M3 12h18M3 18h18" />,
+  archive: <path d="M3 4h18v4H3zM5 8v11a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8M10 12h4" />,
+  trash: <path d="M4 7h16M10 7V5a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v2M6 7l1 13a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-13M10 11v6M14 11v6" />,
+  edit: <path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />,
+  bell: <path d="M18 8a6 6 0 1 0-12 0c0 7-3 8-3 8h18s-3-1-3-8M13.7 21a2 2 0 0 1-3.4 0" />,
+  'bell-off': <path d="M18.6 13A17 17 0 0 1 18 8M8.7 3.7A6 6 0 0 1 18 8M6 8a6 6 0 0 0-.3 1.9C5.5 15 3 16 3 16h13M13.7 21a2 2 0 0 1-3.4 0M2 2l20 20" />,
+  volume: <path d="M11 5 6 9H2v6h4l5 4V5ZM15.5 8.5a5 5 0 0 1 0 7M19 5a9 9 0 0 1 0 14" />,
+  'volume-off': <path d="M11 5 6 9H2v6h4l5 4V5ZM22 9l-6 6M16 9l6 6" />,
+  gauge: <path d="M12 21a9 9 0 1 1 9-9M12 12l5-3M3.5 15h3M17.5 15h3" />,
+  chevron: <path d="m9 6 6 6-6 6" />,
+  more: <path d="M12 6.01V6M12 12.01V12M12 18.01V18" />,
+  moon: <path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z" />,
+  settings: (
+    <>
+      <path d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z" />
+      <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-2.9 1.2v.2a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-3-1.2l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0-1.2-2.9H3a2 2 0 1 1 0-4h.1A1.7 1.7 0 0 0 4.3 7l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 2.9-1.2V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 2.9 1.2l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0 1.2 2.9h.2a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.6 1Z" />
+    </>
+  ),
+  'arrow-down': <path d="M12 4v14m0 0 6-6m-6 6-6-6" />,
+  undo: <path d="M3 12a9 9 0 1 0 3-6.7M3 4v5h5" />,
 };
 
 export function Icon({

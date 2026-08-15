@@ -1,4 +1,13 @@
-import type { Channel, Council, FileTransfer, HiveEvent, Message, PermissionRequest } from '@hive/shared';
+import type {
+  Channel,
+  Council,
+  FileChunk,
+  FileTransfer,
+  FleetStats,
+  HiveEvent,
+  Message,
+  PermissionRequest,
+} from '@hive/shared';
 
 /**
  * The SPA is served from the hive server in production and proxied by Vite in
@@ -43,8 +52,23 @@ export const api = {
   health: () => request<{ ok: boolean; postgres: { configured: boolean } }>('/health'),
 
   channels: () => request<{ channels: Channel[] }>('/api/channels'),
-  createChannel: (input: { name: string; topic?: string; kind?: Channel['kind'] }) =>
-    post<{ channel: Channel }>('/api/channels', input),
+  createChannel: (input: {
+    name: string;
+    topic?: string;
+    description?: string;
+    kind?: Channel['kind'];
+  }) => post<{ channel: Channel }>('/api/channels', input),
+  updateChannel: (id: string, patch: { name?: string; topic?: string; description?: string }) =>
+    request<{ channel: Channel }>(`/api/channels/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+    }),
+  archiveChannel: (id: string, archived: boolean) =>
+    post<{ channel: Channel }>(`/api/channels/${encodeURIComponent(id)}/archive`, { archived }),
+  deleteChannel: (id: string) =>
+    request<{ channel: Channel }>(`/api/channels/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  restoreChannel: (id: string) =>
+    post<{ channel: Channel }>(`/api/channels/${encodeURIComponent(id)}/restore`),
   messages: (channelId: string, limit = 200) =>
     request<{ channel: Channel; messages: Message[] }>(
       `/api/channels/${encodeURIComponent(channelId)}/messages?limit=${limit}`,
@@ -83,8 +107,16 @@ export const api = {
   }) => post<{ council: Council }>('/api/councils', input),
   advanceCouncil: (id: string) => post<{ council: Council }>(`/api/councils/${id}/advance`),
 
+  stats: () => request<FleetStats>('/api/stats'),
+
   files: (channelId?: string) =>
     request<{ files: FileTransfer[] }>(`/api/files${channelId ? `?channelId=${channelId}` : ''}`),
+  deleteFile: (id: string) =>
+    request<{ file: FileTransfer }>(`/api/files/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  fileRange: (id: string, offset = 0, limit = 32_768) =>
+    request<{ chunk: FileChunk }>(
+      `/api/files/${encodeURIComponent(id)}/range?offset=${offset}&limit=${limit}`,
+    ),
   upload: async (file: File, channelId: string | null): Promise<FileTransfer> => {
     const form = new FormData();
     if (channelId) form.append('channelId', channelId);

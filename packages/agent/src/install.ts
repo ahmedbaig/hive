@@ -24,6 +24,7 @@ const hooksDir = path.join(here, 'hooks');
 const gateScript = path.join(hooksDir, 'hive-gate.mjs');
 const eventScript = path.join(hooksDir, 'hive-event.mjs');
 const transcriptScript = path.join(hooksDir, 'hive-transcript.mjs');
+const usageScript = path.join(hooksDir, 'hive-usage.mjs');
 const mcpEntry = path.resolve(here, '../../mcp/dist/index.js');
 
 const configDir = process.env.CLAUDE_CONFIG_DIR || path.join(homedir(), '.claude');
@@ -85,7 +86,7 @@ function addHook(settings: Settings, event: string, command: HookCommand, matche
 }
 
 function main(): void {
-  for (const script of [gateScript, eventScript, transcriptScript]) {
+  for (const script of [gateScript, eventScript, transcriptScript, usageScript]) {
     if (!existsSync(script)) {
       throw new Error(`hook script missing: ${script} — run \`npm run build\` first`);
     }
@@ -126,6 +127,17 @@ function main(): void {
           timeout: 20,
         });
       }
+    }
+
+    // Token and context accounting. Installed independently of the transcript
+    // mirror: it reads the same file but posts only counts, so a fleet that has
+    // turned message mirroring off for privacy still gets its usage numbers.
+    for (const event of ['Stop', 'SessionEnd']) {
+      addHook(settings, event, {
+        type: 'command',
+        command: `"${node}" "${usageScript}"`,
+        timeout: 15,
+      });
     }
 
     if (withGate) {
@@ -186,6 +198,7 @@ function main(): void {
   if (!remove) {
     console.log(`  telemetry hooks: ${telemetryEvents.join(', ')}`);
     console.log(`  transcript sync: ${withTranscript ? 'Stop, SessionEnd' : 'disabled'}`);
+    console.log('  usage reporting: Stop, SessionEnd');
     console.log(`  permission gate: ${withGate ? 'PreToolUse (remote approval)' : 'disabled'}`);
     console.log(`  MCP server:      ${existsSync(mcpEntry) ? 'hive' : 'skipped'}`);
     console.log('\nRestart Claude Code for the changes to take effect.');

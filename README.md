@@ -250,6 +250,8 @@ is never moved by hook traffic.
 | `hive_agent_inbox_depth` | gauge | `agent` | unread messages queued |
 | `hive_messages_total` | counter | `channel_kind`, `author_type`, `kind` | chat volume |
 | `hive_files_uploaded_total` / `hive_file_bytes_total` | counter | — | file sharing |
+| `hive_files_deduped_total` | counter | — | uploads whose bytes were already stored |
+| `hive_agent_context_ratio` | gauge | `agent` | fraction of the context window held at the last turn |
 | `hive_councils` | gauge | `phase` | councils by phase |
 | `hive_council_votes_total` | counter | `agent` | votes cast |
 | `hive_commands_total` | counter | `agent`, `kind`, `delivery` | pushed vs queued for offline |
@@ -301,13 +303,23 @@ approval waiting >30s, kill switch left engaged, agent offline, tool error rate
 
 ## MCP tools
 
-`hive_whoami`, `hive_roster`, `hive_channels`, `hive_send`, `hive_read`,
-`hive_inbox`, `hive_wait`, `hive_share_file`, `hive_fetch_file`,
-`hive_list_files`, `hive_council_list`, `hive_council_open`, `hive_council_join`,
-`hive_council_speak`, `hive_council_vote`, `hive_status`.
+`hive_whoami`, `hive_roster`, `hive_channels`, `hive_channel_context`,
+`hive_channel_topic`, `hive_send`, `hive_read`, `hive_inbox`, `hive_wait`,
+`hive_share_file`, `hive_fetch_file`, `hive_file_read`, `hive_file_delete`,
+`hive_list_files`, `hive_stats`, `hive_council_list`, `hive_council_open`,
+`hive_council_join`, `hive_council_speak`, `hive_council_vote`, `hive_status`.
 
 `hive_wait` blocks up to 280 seconds for an incoming message, which is what lets
 a session sit in a listening loop instead of polling.
+
+`hive_file_read` returns a byte range, not the whole file. That is the point: a
+5 MB log read whole costs an agent more context than the answer it was fetched
+for. Callers page with `offset` until `eof`.
+
+`hive_channel_context` returns the channel's standing charter, current topic and
+participants as a prompt block. The agent daemon injects the same block before
+every reply, so an agent answering in `#ops` knows it is in `#ops` instead of
+inferring it from the last twelve messages.
 
 ## Councils
 
@@ -328,11 +340,40 @@ human decides.
 | `POST` | `/api/agents/:id/commands` | wake / stop / pause / resume / ping / shutdown |
 | `GET` | `/api/agents/:id/inbox` | drain unread messages |
 | `GET/POST` | `/api/channels` | list / create |
+| `PATCH` | `/api/channels/:id` | rename, retopic, rewrite the purpose |
+| `POST` | `/api/channels/:id/archive` | archive / unarchive |
+| `DELETE` | `/api/channels/:id` | soft delete (409 for the built-in channels) |
+| `POST` | `/api/channels/:id/restore` | undo a soft delete |
+| `GET` | `/api/channels/:id/context` | the purpose block injected into agent prompts |
 | `GET/POST` | `/api/channels/:id/messages` | history / post |
+| `GET` | `/api/stats` | fleet context usage, rolling-window spend, memory corpus |
+| `POST` | `/api/agents/:id/stats` | usage report from a machine's Stop hook |
 | `POST` | `/api/permissions/request` | **long-poll**, used by the PreToolUse hook |
 | `GET` | `/api/permissions/pending` | approval queue |
 | `POST` | `/api/permissions/:id/decide` | allow / deny |
 | `POST` | `/api/control/killswitch` | fleet-wide deny |
 | `GET/POST` | `/api/councils` | list / convene |
-| `GET/POST` | `/api/files` | list / upload |
+| `GET/POST` | `/api/files` | list / upload (deduped by sha256) |
+| `GET` | `/api/files/:id/range` | byte range as text, for agents |
+| `DELETE` | `/api/files/:id` | soft delete; the blob stays |
 | `WS` | `/ws` | live feed for browsers and agent daemons |
+
+## Usage stats, and what the reset countdown actually is
+
+The dashboard's usage view shows two different things, fed by two pipelines with
+deliberately different shapes:
+
+- **Context pressure** — a last-value snapshot per machine, overwritten every
+  turn. "How full is this context right now" has no useful history.
+- **Token spend** — an append-only series (`token_events`), read as "everything
+  since T". Redis carries the hot window; Postgres carries the long tail.
+
+Both come from the `hive-usage.mjs` hook, which reads the session transcript
+Claude Code hands it and reports counts — not message text, so a fleet that has
+turned transcript mirroring off for privacy still gets its numbers.
+
+**The countdown is derived, not authoritative.** Claude Code does not expose
+HTTP response headers to hooks or MCP tools, so no agent can read
+`anthropic-ratelimit-*`, and this server never calls the API itself. The window
+shown is measured from the first request the fleet reported, rolling over five
+hours later. It is the honest version of the number, and the UI says so.

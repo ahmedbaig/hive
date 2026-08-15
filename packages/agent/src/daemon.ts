@@ -334,10 +334,14 @@ async function replyToMessage(message: ChatMessage, reason: string): Promise<voi
   const startedAt = Date.now();
 
   try {
-    const history = await recentHistory(message.channelId);
+    const [history, channelContext] = await Promise.all([
+      recentHistory(message.channelId),
+      channelContextFor(message.channelId),
+    ]);
     const prompt = [
       `You are "${AGENT_NAME}", a Claude Code agent on host ${hostname()}, taking part in a team chat`,
       `called Hive alongside a human operator and other Claude agents.`,
+      ...(channelContext ? [``, channelContext] : []),
       ``,
       `Recent messages in this channel:`,
       history,
@@ -370,6 +374,37 @@ async function replyToMessage(message: ChatMessage, reason: string): Promise<voi
   } finally {
     replying = false;
     await heartbeat('idle', null);
+  }
+}
+
+/**
+ * The channel's standing context, rendered by the server.
+ *
+ * Fetched rather than composed here so every path that wakes an agent states
+ * the channel's purpose in the same words. Without it a woken agent answers
+ * blind: it sees the last twelve messages and no idea what the channel is for,
+ * which is exactly how a reply ends up off-topic.
+ *
+ * Cached for a minute — a charter changes rarely and this runs on every reply.
+ */
+const channelContextCache = new Map<string, { text: string; at: number }>();
+const CHANNEL_CONTEXT_TTL_MS = 60_000;
+
+async function channelContextFor(channelId: string): Promise<string> {
+  const cached = channelContextCache.get(channelId);
+  if (cached && Date.now() - cached.at < CHANNEL_CONTEXT_TTL_MS) return cached.text;
+  try {
+    const res = await fetch(
+      `${HIVE_URL}/api/channels/${encodeURIComponent(channelId)}/context`,
+      { headers: headers() },
+    );
+    if (!res.ok) return cached?.text ?? '';
+    const body = (await res.json()) as { context?: string };
+    const text = typeof body.context === 'string' ? body.context : '';
+    channelContextCache.set(channelId, { text, at: Date.now() });
+    return text;
+  } catch {
+    return cached?.text ?? '';
   }
 }
 
@@ -538,7 +573,12 @@ async function wake(prompt: string, replyChannelId: string | null): Promise<void
   log('waking', { prompt: prompt.slice(0, 80) });
   await heartbeat('working', `woken: ${prompt.slice(0, 80)}`);
 
-  const child = spawn(CLAUDE_BIN, ['-p', prompt], {
+  // A woken run reports into a channel, so it gets that channel's charter too —
+  // otherwise the reply is written for nobody in particular.
+  const context = replyChannelId ? await channelContextFor(replyChannelId) : '';
+  const framedPrompt = context ? `${context}\n\n${prompt}` : prompt;
+
+  const child = spawn(CLAUDE_BIN, ['-p', framedPrompt], {
     cwd: WAKE_CWD,
     env: { ...process.env, HIVE_SESSION_KEY: SESSION_KEY, HIVE_AGENT_NAME: AGENT_NAME },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -628,7 +668,11 @@ function connect(): void {
     }
     if (frame.t === 'command') void handleCommand(frame.command);
     if (frame.t === 'error') log('server error', { message: frame.message });
-    if (frame.t === 'channel') channelNames.set(frame.channel.id, frame.channel.name);
+    if (frame.t === 'channel') {
+      channelNames.set(frame.channel.id, frame.channel.name);
+      // An edited charter must reach the next reply, not the one after the TTL.
+      channelContextCache.delete(frame.channel.id);
+    }
     if (frame.t === 'welcome') {
       for (const channel of frame.channels) channelNames.set(channel.id, channel.name);
     }

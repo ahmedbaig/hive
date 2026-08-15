@@ -66,12 +66,18 @@ export const ServerMessage = z.object({ t: z.literal('message'), message: Messag
 export const ServerAgentUpsert = z.object({ t: z.literal('agent'), agent: AgentRecord });
 export const ServerAgentRemove = z.object({ t: z.literal('agent.remove'), agentId: z.string() });
 export const ServerChannel = z.object({ t: z.literal('channel'), channel: Channel });
+/** A channel was soft-deleted. Clients drop it; the row survives server-side. */
+export const ServerChannelRemove = z.object({
+  t: z.literal('channel.remove'),
+  channelId: z.string(),
+});
 export const ServerPermission = z.object({
   t: z.literal('permission'),
   request: PermissionRequest,
 });
 export const ServerCouncil = z.object({ t: z.literal('council'), council: Council });
 export const ServerFile = z.object({ t: z.literal('file'), file: FileTransfer });
+export const ServerFileRemove = z.object({ t: z.literal('file.remove'), fileId: z.string() });
 export const ServerKillSwitch = z.object({
   t: z.literal('killswitch'),
   reason: z.string().nullable(),
@@ -88,9 +94,11 @@ export const OutboundFrame = z.discriminatedUnion('t', [
   ServerAgentUpsert,
   ServerAgentRemove,
   ServerChannel,
+  ServerChannelRemove,
   ServerPermission,
   ServerCouncil,
   ServerFile,
+  ServerFileRemove,
   ServerKillSwitch,
   ServerCommand,
   ServerPong,

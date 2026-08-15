@@ -18,6 +18,132 @@ export const AgentRole = z.enum([
 ]);
 export type AgentRole = z.infer<typeof AgentRole>;
 
+/**
+ * Last-value telemetry for one agent.
+ *
+ * Deliberately a snapshot, not a series: it answers "how full is this machine's
+ * context right now", which has no useful history — the agent overwrites it on
+ * every turn. Historical spend lives in `TokenEvent`, which is append-only and
+ * written at a completely different rate. Sharing one table for both would mean
+ * either rewriting history rows or keeping a series nobody graphs.
+ */
+export const AgentStats = z.object({
+  /** Tokens occupying the model's context window at the end of the last turn. */
+  contextUsed: z.number().int().nonnegative().default(0),
+  /** Window size for the reporting model, so the UI can render a percentage. */
+  contextMax: z.number().int().positive().default(200_000),
+  model: z.string().nullable().default(null),
+  sessionId: z.string().nullable().default(null),
+  /** Cumulative totals for the reporting session, not for the reset window. */
+  inputTokens: z.number().int().nonnegative().default(0),
+  outputTokens: z.number().int().nonnegative().default(0),
+  cacheReadTokens: z.number().int().nonnegative().default(0),
+  cacheWriteTokens: z.number().int().nonnegative().default(0),
+  /** Turns this session has taken, for a tokens-per-turn read. */
+  turns: z.number().int().nonnegative().default(0),
+  updatedAt: z.number().int(),
+});
+export type AgentStats = z.infer<typeof AgentStats>;
+
+/** What an agent posts after a turn. Deltas plus a fresh context snapshot. */
+export const StatsReport = z.object({
+  contextUsed: z.number().int().nonnegative().default(0),
+  contextMax: z.number().int().positive().default(200_000),
+  model: z.string().nullable().default(null),
+  sessionId: z.string().nullable().default(null),
+  inputTokens: z.number().int().nonnegative().default(0),
+  outputTokens: z.number().int().nonnegative().default(0),
+  cacheReadTokens: z.number().int().nonnegative().default(0),
+  cacheWriteTokens: z.number().int().nonnegative().default(0),
+  turns: z.number().int().nonnegative().default(1),
+  /** Session totals so far, used to replace rather than accumulate the record. */
+  sessionTotals: z
+    .object({
+      inputTokens: z.number().int().nonnegative().default(0),
+      outputTokens: z.number().int().nonnegative().default(0),
+      cacheReadTokens: z.number().int().nonnegative().default(0),
+      cacheWriteTokens: z.number().int().nonnegative().default(0),
+      turns: z.number().int().nonnegative().default(0),
+    })
+    .nullable()
+    .default(null),
+});
+export type StatsReport = z.infer<typeof StatsReport>;
+
+/** One append-only spend row. Never updated, only inserted and aged out. */
+export const TokenEvent = z.object({
+  id: z.string(),
+  ts: z.number().int(),
+  agentId: z.string(),
+  agentName: z.string(),
+  sessionId: z.string().nullable().default(null),
+  model: z.string().nullable().default(null),
+  inputTokens: z.number().int().nonnegative().default(0),
+  outputTokens: z.number().int().nonnegative().default(0),
+  cacheReadTokens: z.number().int().nonnegative().default(0),
+  cacheWriteTokens: z.number().int().nonnegative().default(0),
+  /** Model turns this report covers, which is not the same as one report. */
+  turns: z.number().int().nonnegative().default(1),
+});
+export type TokenEvent = z.infer<typeof TokenEvent>;
+
+/**
+ * Spend inside the current rolling window.
+ *
+ * Computed server-side and shipped as absolute timestamps. A client that
+ * computed `resetsAt` itself would be wrong by its own clock skew, and every
+ * browser on the LAN would disagree about when the window turns over.
+ *
+ * `startedAt` is the first billable request inside the window, so `resetsAt` is
+ * `startedAt + windowMs` — the same rolling shape Anthropic's own limits use.
+ * The rate-limit *headers* are not available to us: Claude Code never exposes
+ * HTTP response headers to hooks or MCP tools, and the hive server never talks
+ * to the API itself, so there is nothing to read them from. This window is
+ * derived from observed spend, which is honest but is not the billing window.
+ */
+export const UsageWindow = z.object({
+  windowMs: z.number().int().positive(),
+  startedAt: z.number().int().nullable().default(null),
+  resetsAt: z.number().int().nullable().default(null),
+  inputTokens: z.number().int().nonnegative().default(0),
+  outputTokens: z.number().int().nonnegative().default(0),
+  cacheReadTokens: z.number().int().nonnegative().default(0),
+  cacheWriteTokens: z.number().int().nonnegative().default(0),
+  totalTokens: z.number().int().nonnegative().default(0),
+  turns: z.number().int().nonnegative().default(0),
+});
+export type UsageWindow = z.infer<typeof UsageWindow>;
+
+/** Memory files this fleet has collected, aggregated for the stats view. */
+export const MemoryStats = z.object({
+  files: z.number().int().nonnegative().default(0),
+  bytes: z.number().int().nonnegative().default(0),
+  machines: z.number().int().nonnegative().default(0),
+  lastSyncAt: z.number().int().nullable().default(null),
+});
+export type MemoryStats = z.infer<typeof MemoryStats>;
+
+export const AgentUsage = z.object({
+  agentId: z.string(),
+  agentName: z.string(),
+  status: z.string(),
+  stats: AgentStats.nullable().default(null),
+  window: UsageWindow,
+  /** Coarse buckets over the window, oldest first, for a sparkline. */
+  spark: z.array(z.number()).default([]),
+});
+export type AgentUsage = z.infer<typeof AgentUsage>;
+
+export const FleetStats = z.object({
+  serverTime: z.number().int(),
+  window: UsageWindow,
+  agents: z.array(AgentUsage).default([]),
+  memory: MemoryStats,
+  /** True when the series is backed by Postgres rather than the Redis cache. */
+  durable: z.boolean().default(false),
+});
+export type FleetStats = z.infer<typeof FleetStats>;
+
 export const AgentRecord = z.object({
   id: z.string(),
   name: z.string().min(1).max(64),
@@ -38,6 +164,8 @@ export const AgentRecord = z.object({
   lastSeen: z.number().int(),
   /** Short human-readable note of what it is doing right now. */
   activity: z.string().nullable().default(null),
+  /** Latest context/token snapshot this machine reported. Null until it does. */
+  stats: AgentStats.nullable().default(null),
 });
 export type AgentRecord = z.infer<typeof AgentRecord>;
 
@@ -117,12 +245,33 @@ export const Channel = z.object({
   id: z.string(),
   name: z.string().min(1).max(80),
   kind: ChannelKind.default('group'),
+  /**
+   * The current focus. Mutable, changes as the work moves on.
+   *
+   * Kept separate from `description` on purpose: the two drift apart within a
+   * day, and collapsing them means either the charter goes stale or the focus
+   * gets overwritten every time someone edits the charter.
+   */
   topic: z.string().default(''),
+  /**
+   * The channel's standing charter — what it is for, who belongs in it. Static.
+   * Injected into every agent's prompt so a woken agent knows where it is
+   * speaking; without it an agent answers blind and drifts off-topic.
+   */
+  description: z.string().default(''),
   /** Agent ids. The human operator is implicitly a member of every channel. */
   members: z.array(z.string()).default([]),
   createdAt: z.number().int(),
   createdBy: z.string(),
+  /** Mirrors `archivedAt !== null`; both are always written together. */
   archived: z.boolean().default(false),
+  archivedAt: z.number().int().nullable().default(null),
+  /**
+   * Soft delete only. An agent channel is often the sole record of why a
+   * decision was made, so the row is hidden rather than dropped and can be
+   * restored from the undo toast or the archive list.
+   */
+  deletedAt: z.number().int().nullable().default(null),
 });
 export type Channel = z.infer<typeof Channel>;
 
@@ -263,8 +412,31 @@ export const FileTransfer = z.object({
   channelId: z.string().nullable().default(null),
   /** Server-side storage path, never exposed to clients. */
   storedPath: z.string(),
+  /**
+   * Set when the bytes were already on disk under this hash. The metadata row
+   * is still new — two agents sharing the same file get two ids and one blob.
+   */
+  deduped: z.boolean().default(false),
+  /** True when the content is small text the server can serve inline as ranges. */
+  inlineText: z.boolean().default(false),
+  deletedAt: z.number().int().nullable().default(null),
 });
 export type FileTransfer = z.infer<typeof FileTransfer>;
+
+/** A window of a shared file, so one large log cannot flood an agent's context. */
+export const FileChunk = z.object({
+  fileId: z.string(),
+  filename: z.string(),
+  /** Byte offset the slice starts at. */
+  offset: z.number().int().nonnegative(),
+  /** Bytes actually returned; may be shorter than requested at end of file. */
+  length: z.number().int().nonnegative(),
+  size: z.number().int().nonnegative(),
+  eof: z.boolean(),
+  /** Only set when the file decodes as text; binary is refused, not mangled. */
+  text: z.string().nullable().default(null),
+});
+export type FileChunk = z.infer<typeof FileChunk>;
 
 /* ── Council ─────────────────────────────────────────────────────────────── */
 

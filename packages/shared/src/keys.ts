@@ -45,6 +45,18 @@ export const K = {
   councils: `${NS}:councils`,
   /** Hash: fileId -> serialised FileTransfer. */
   files: `${NS}:files`,
+  /**
+   * Hash: sha256 -> storedPath. Agents re-share the same artifact constantly
+   * (memory sync alone re-uploads on every change), so identical bytes are
+   * written once and later uploads point at the existing blob.
+   */
+  fileBlobs: `${NS}:files:sha`,
+
+  /**
+   * Token spend stream. Postgres holds the long tail; this is the hot window
+   * the stats view reads, and the only series at all when Postgres is absent.
+   */
+  tokenStream: `${NS}:stream:tokens`,
 
   /**
    * Fleet kill switch. When set, every PreToolUse hook denies immediately

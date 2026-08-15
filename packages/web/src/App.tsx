@@ -1,239 +1,211 @@
-import type { Channel } from '@hive/shared';
-import { useEffect, useState } from 'react';
-import { api, operatorName, setOperatorName } from './api.js';
+import { useEffect } from 'react';
+import { api } from './api.js';
 import { Chat } from './components/Chat.js';
 import { CouncilView } from './components/CouncilView.js';
 import { EventFeed } from './components/EventFeed.js';
 import { Files } from './components/Files.js';
 import { Icon, type IconName } from './components/Icon.js';
 import { RightRail } from './components/RightRail.js';
-import { avatarColor, initials } from './format.js';
-import { connectSocket, useHive } from './store.js';
-
-type View = 'chat' | 'feed' | 'council' | 'files';
+import { Sidebar, channelIcon } from './components/Sidebar.js';
+import { StatsView } from './components/StatsView.js';
+import { Toasts } from './components/Toasts.js';
+import { connectSocket, useHive, type View } from './store.js';
 
 const VIEWS: Array<{ id: View; icon: IconName; label: string }> = [
   { id: 'chat', icon: 'chat', label: 'Chat' },
   { id: 'feed', icon: 'activity', label: 'Live feed' },
+  { id: 'stats', icon: 'gauge', label: 'Usage' },
   { id: 'council', icon: 'scale', label: 'Council' },
   { id: 'files', icon: 'folder', label: 'Files' },
 ];
 
-/** Fixed icon per channel so the sidebar reads at a glance. */
-function channelIcon(channel: Channel): IconName {
-  if (channel.kind === 'council') return 'scale';
-  if (channel.kind === 'direct') return 'at';
-  if (channel.kind === 'system') return 'megaphone';
-  if (channel.name === 'memory') return 'brain';
-  if (channel.name === 'sessions') return 'thread';
-  if (channel.name === 'ops') return 'wrench';
-  return 'hash';
-}
-
 export function App(): JSX.Element {
-  const connection = useHive((s) => s.connection);
+  const view = useHive((s) => s.view);
+  const channelId = useHive((s) => s.channelId);
   const channels = useHive((s) => s.channels);
   const killSwitch = useHive((s) => s.killSwitch);
   const permissions = useHive((s) => s.permissions);
+  const unread = useHive((s) => s.unread);
+  const prefs = useHive((s) => s.prefs);
+  const drawerOpen = useHive((s) => s.drawerOpen);
+  const railOpen = useHive((s) => s.railOpen);
+  const selectedAgent = useHive((s) => s.selectedAgent);
 
-  const [view, setView] = useState<View>('chat');
-  const [channelId, setChannelId] = useState('chn_lobby');
-  const [selectedAgent, setSelectedAgent] = useState<string | null>(null);
-  const [operator, setOperator] = useState(operatorName());
-  const [editingName, setEditingName] = useState(false);
+  const setView = useHive((s) => s.setView);
+  const setDrawer = useHive((s) => s.setDrawer);
+  const setRail = useHive((s) => s.setRail);
+  const selectAgent = useHive((s) => s.selectAgent);
+  const toggleMute = useHive((s) => s.toggleMute);
 
   useEffect(() => connectSocket(), []);
 
-  const channelList = Object.values(channels)
-    .filter((c) => !c.archived)
-    .sort((a, b) => a.createdAt - b.createdAt);
+  // Escape closes whichever overlay is open, in the order a user expects.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key !== 'Escape') return;
+      if (railOpen) setRail(false);
+      else if (drawerOpen) setDrawer(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [drawerOpen, railOpen, setDrawer, setRail]);
+
   const active = channels[channelId];
   const pendingCount = Object.values(permissions).filter((p) => p.status === 'pending').length;
-
-  const chatChannels = channelList.filter((c) => c.kind !== 'council');
-  const councilChannels = channelList.filter((c) => c.kind === 'council');
+  const totalUnread = Object.entries(unread)
+    .filter(([id]) => !prefs.mutedChannels.includes(id))
+    .reduce((sum, [, count]) => sum + count, 0);
+  const muted = prefs.mutedChannels.includes(channelId);
 
   return (
-    <div className="app">
-      <nav className="rail">
-        <div className="rail-logo"><Icon name="cpu" size={21} /></div>
+    <div className={`app ${drawerOpen ? 'drawer-open' : ''} ${railOpen ? 'rail-open' : ''}`}>
+      <nav className="rail" aria-label="Views">
+        <div className="rail-logo">
+          <Icon name="cpu" size={21} />
+        </div>
         <div className="rail-divider" />
         {VIEWS.map((item) => (
-          <div
+          <button
             key={item.id}
             className={`rail-btn ${view === item.id ? 'active' : ''}`}
             title={item.label}
+            aria-label={item.label}
+            aria-current={view === item.id}
             onClick={() => setView(item.id)}
           >
             <Icon name={item.icon} size={19} />
-            {item.id === 'chat' && pendingCount > 0 && <span className="pip">{pendingCount}</span>}
-          </div>
+            {item.id === 'chat' && totalUnread > 0 && (
+              <span className="pip">{totalUnread > 99 ? '99+' : totalUnread}</span>
+            )}
+          </button>
         ))}
         <div className="rail-spacer" />
-        <div
-className={`rail-btn ${killSwitch ? 'danger-state' : ''}`}
+        <button
+          className={`rail-btn ${killSwitch ? 'danger-state' : ''}`}
           title={killSwitch ? 'Release the kill switch' : 'Kill switch — deny every tool call'}
-          onClick={() =>
-            void api.killSwitch(!killSwitch, 'stopped from dashboard').catch(console.error)
-          }
+          aria-label="Kill switch"
+          onClick={() => void api.killSwitch(!killSwitch, 'stopped from dashboard').catch(console.error)}
         >
           <Icon name="ban" size={19} />
-        </div>
+        </button>
       </nav>
 
-      <aside className="sidebar">
-        <div className="col-head">
-          <span className={`conn-dot ${connection}`} />
-          <span>Hive</span>
-          <span className="spacer" />
-          <span className="muted" style={{ fontSize: 11.5, fontWeight: 500 }}>
-            {connection}
-          </span>
-        </div>
-
-        <div className="sidebar-body">
-          <div className="group-label">
-            <span>Channels</span>
-            <button className="bare"
-              title="New channel"
-              onClick={() => {
-                const name = prompt('Channel name');
-                if (!name) return;
-                void api
-                  .createChannel({ name })
-                  .then(({ channel }) => {
-                    setChannelId(channel.id);
-                    setView('chat');
-                  })
-                  .catch(console.error);
-              }}
-            >
-              <Icon name="plus" size={15} />
-            </button>
-          </div>
-          {chatChannels.map((channel) => (
-            <div
-              key={channel.id}
-              className={`chan ${channel.id === channelId && view === 'chat' ? 'active' : ''}`}
-              onClick={() => {
-                setChannelId(channel.id);
-                setView('chat');
-              }}
-            >
-              <Icon name={channelIcon(channel)} size={16} />
-              <span className="label">{channel.name}</span>
-            </div>
-          ))}
-
-          {councilChannels.length > 0 && (
-            <>
-              <div className="group-label">Councils</div>
-              {councilChannels.map((channel) => (
-                <div
-                  key={channel.id}
-                  className={`chan ${channel.id === channelId && view === 'chat' ? 'active' : ''}`}
-                  onClick={() => {
-                    setChannelId(channel.id);
-                    setView('chat');
-                  }}
-                >
-                  <Icon name={channelIcon(channel)} size={16} />
-                  <span className="label">{channel.name.replace('council:', '')}</span>
-                </div>
-              ))}
-            </>
-          )}
-        </div>
-
-        <div className="sidebar-foot">
-          <div
-            className="avatar"
-            style={{ background: avatarColor(operator), width: 32, height: 32, fontSize: 12 }}
-          >
-            {initials(operator)}
-          </div>
-          {editingName ? (
-            <input
-              autoFocus
-              value={operator}
-              onChange={(e) => {
-                setOperator(e.target.value);
-                setOperatorName(e.target.value);
-              }}
-              onBlur={() => setEditingName(false)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') setEditingName(false);
-              }}
-              style={{ padding: '4px 8px', fontSize: 13 }}
-            />
-          ) : (
-            <div
-              style={{ cursor: 'pointer', minWidth: 0 }}
-              onClick={() => setEditingName(true)}
-              title="Click to rename — this is what appears in the audit trail"
-            >
-              <div style={{ fontWeight: 600, fontSize: 13.5 }}>{operator}</div>
-              <div className="muted" style={{ fontSize: 11.5 }}>
-                operator
-              </div>
-            </div>
-          )}
-        </div>
-      </aside>
+      <Sidebar />
 
       <main className="main">
         {killSwitch && (
           <div className="banner">
-            <Icon name="alert" size={16} /> Kill switch engaged — every tool call across the fleet is being denied.
+            <Icon name="alert" size={16} />
+            <span>Kill switch engaged — every tool call across the fleet is being denied.</span>
             <span className="spacer" />
-            <button
-              className="tiny"
-              onClick={() => void api.killSwitch(false).catch(console.error)}
-            >
+            <button className="tiny" onClick={() => void api.killSwitch(false).catch(console.error)}>
               Release
             </button>
           </div>
         )}
 
-        <div className="col-head">
+        <header className="col-head">
+          <button
+            className="icon-btn only-sm"
+            aria-label="Open channels"
+            onClick={() => setDrawer(true)}
+          >
+            <Icon name="menu" size={20} />
+          </button>
+
           {view === 'chat' && active ? (
             <>
-              <span className="row" style={{ gap: 7, minWidth: 0 }}>
+              <span className="head-title">
                 <Icon name={channelIcon(active)} size={17} className="muted" />
-                {active.name}
+                <span className="head-name">{active.name}</span>
               </span>
-              {active.topic && (
+              {(active.topic || active.description) && (
                 <>
-                  <span className="vline" />
-                  <span className="topic">{active.topic}</span>
+                  <span className="vline hide-sm" />
+                  <span className="topic hide-sm" title={active.description || undefined}>
+                    {active.topic || active.description}
+                  </span>
                 </>
               )}
             </>
           ) : (
-            <span className="row" style={{ gap: 7, minWidth: 0 }}>{VIEWS.find((v) => v.id === view)?.label}</span>
+            <span className="head-title">
+              <span className="head-name">{VIEWS.find((v) => v.id === view)?.label}</span>
+            </span>
           )}
+
           <span className="spacer" />
+
           {view === 'feed' && selectedAgent && (
-            <button className="ghost tiny" onClick={() => setSelectedAgent(null)}>
-              Clear agent filter
+            <button className="ghost tiny" onClick={() => selectAgent(null)}>
+              Clear filter
             </button>
           )}
-        </div>
 
-        {view === 'chat' && <Chat key={channelId} channelId={channelId} />}
-        {view === 'feed' && <EventFeed agentFilter={selectedAgent} />}
-        {view === 'council' && (
-          <CouncilView
-            onOpenChannel={(id) => {
-              setChannelId(id);
-              setView('chat');
-            }}
-          />
-        )}
-        {view === 'files' && <Files />}
+          {view === 'chat' && active && (
+            <button
+              className="icon-btn"
+              aria-label={muted ? `Unmute ${active.name}` : `Mute ${active.name}`}
+              title={muted ? 'Unmute this channel' : 'Mute this channel'}
+              onClick={() => toggleMute(active.id)}
+            >
+              <Icon name={muted ? 'bell-off' : 'bell'} size={18} />
+            </button>
+          )}
+
+          <button
+            className="icon-btn only-narrow"
+            aria-label="Approvals and agents"
+            onClick={() => setRail(true)}
+          >
+            <Icon name="shield" size={18} />
+            {pendingCount > 0 && <span className="pip">{pendingCount}</span>}
+          </button>
+        </header>
+
+        {/*
+          Keyed on the view so switching tabs replays the enter animation. It is
+          deliberately not keyed on the channel: remounting on channel switch is
+          what used to throw away the composer draft.
+        */}
+        <div className="view" key={view}>
+          {view === 'chat' && <Chat channelId={channelId} />}
+          {view === 'feed' && <EventFeed agentFilter={selectedAgent} />}
+          {view === 'stats' && <StatsView />}
+          {view === 'council' && (
+            <CouncilView onOpenChannel={(id) => useHive.getState().openChannel(id)} />
+          )}
+          {view === 'files' && <Files />}
+        </div>
       </main>
 
-      <RightRail selected={selectedAgent} onSelect={setSelectedAgent} />
+      <RightRail selected={selectedAgent} onSelect={selectAgent} />
+
+      {/* One scrim for both overlays; whichever is open owns it. */}
+      <div
+        className="scrim"
+        onClick={() => {
+          setDrawer(false);
+          setRail(false);
+        }}
+      />
+
+      <nav className="tabbar" aria-label="Views">
+        {VIEWS.map((item) => (
+          <button
+            key={item.id}
+            className={`tab ${view === item.id ? 'active' : ''}`}
+            aria-current={view === item.id}
+            onClick={() => setView(item.id)}
+          >
+            <Icon name={item.icon} size={20} />
+            <span>{item.label}</span>
+            {item.id === 'chat' && totalUnread > 0 && <span className="pip">{totalUnread}</span>}
+          </button>
+        ))}
+      </nav>
+
+      <Toasts />
     </div>
   );
 }

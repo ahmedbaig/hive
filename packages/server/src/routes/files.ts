@@ -1,7 +1,16 @@
 import { createReadStream } from 'node:fs';
 import type { FastifyInstance } from 'fastify';
+import { z } from 'zod';
 import { resolveChannel } from '../services/channels.js';
-import { MAX_FILE_BYTES, getFile, listFiles, storeFile } from '../services/files.js';
+import {
+  MAX_FILE_BYTES,
+  MAX_RANGE_BYTES,
+  deleteFile,
+  getFile,
+  listFiles,
+  readFileRange,
+  storeFile,
+} from '../services/files.js';
 import { actorFrom } from './auth.js';
 
 /**
@@ -70,6 +79,36 @@ export async function fileRoutes(app: FastifyInstance): Promise<void> {
   app.get('/api/files/:id/meta', async (req, reply) => {
     const { id } = req.params as { id: string };
     const file = await getFile(id);
+    if (!file) return reply.code(404).send({ error: 'unknown file' });
+    return { file: { ...file, storedPath: undefined } };
+  });
+
+  /**
+   * A window of a file, for agents.
+   *
+   * The whole-file download exists for humans and for tooling that writes to
+   * disk. A model reading a 5 MB log through it spends more context on the log
+   * than it has left for the answer, so agents page through here instead.
+   */
+  app.get('/api/files/:id/range', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const parsed = z
+      .object({
+        offset: z.coerce.number().int().nonnegative().default(0),
+        limit: z.coerce.number().int().positive().max(MAX_RANGE_BYTES).default(32_768),
+      })
+      .safeParse(req.query ?? {});
+    if (!parsed.success) return reply.code(400).send({ error: 'invalid range' });
+
+    const chunk = await readFileRange(id, parsed.data.offset, parsed.data.limit);
+    if (!chunk) return reply.code(404).send({ error: 'unknown file' });
+    return { chunk };
+  });
+
+  /** Soft delete. The bytes stay on disk; the row stops being listed. */
+  app.delete('/api/files/:id', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const file = await deleteFile(id);
     if (!file) return reply.code(404).send({ error: 'unknown file' });
     return { file: { ...file, storedPath: undefined } };
   });

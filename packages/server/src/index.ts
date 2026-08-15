@@ -27,6 +27,7 @@ import { councilRoutes } from './routes/council.js';
 import { eventRoutes } from './routes/events.js';
 import { fileRoutes } from './routes/files.js';
 import { permissionRoutes } from './routes/permissions.js';
+import { statsRoutes } from './routes/stats.js';
 import { wsRoutes } from './routes/ws.js';
 import { listAgents, startPresenceSweep } from './services/agents.js';
 import { ensureDefaultChannels } from './services/channels.js';
@@ -100,6 +101,7 @@ async function main(): Promise<void> {
   await app.register(councilRoutes);
   await app.register(fileRoutes);
   await app.register(eventRoutes);
+  await app.register(statsRoutes);
   await app.register(wsRoutes);
 
   // Serve the built SPA when it exists, so one process covers API and UI in

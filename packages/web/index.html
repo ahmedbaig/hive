@@ -2,7 +2,26 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- viewport-fit=cover hands us the notch area; the safe-area insets in
+         styles.css then keep content out of it. Without it an iPhone letterboxes
+         the whole app and the dark chrome stops at a grey band. -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=5.0"
+    />
+    <meta name="theme-color" content="#14161b" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="description" content="Control plane for a fleet of Claude Code agents." />
+
+    <!-- Installed-app metadata. On iOS this is what makes notifications possible
+         at all: a plain Safari tab never delivers them. -->
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" type="image/png" href="/icon-192.png" />
+    <link rel="apple-touch-icon" href="/icon-192.png" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Hive" />
+
     <title>Hive — Claude fleet control</title>
   </head>
   <body>

@@ -1,5 +1,5 @@
 import type { Attachment, Message } from '@hive/shared';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { api } from '../api.js';
 import { avatarColor, bytes, clock, initials, stamp } from '../format.js';
 import { useHive } from '../store.js';
@@ -19,32 +19,99 @@ const NO_MESSAGES: Message[] = [];
 /** Messages from the same author within this window render as one run. */
 const GROUP_WINDOW_MS = 5 * 60 * 1000;
 
+/** How close to the bottom still counts as "following the conversation". */
+const STICK_THRESHOLD_PX = 120;
+
 export function Chat({ channelId }: Props): JSX.Element {
   const messages = useHive((s) => s.messages[channelId] ?? NO_MESSAGES);
   const loaded = useHive((s) => s.loadedChannels.has(channelId));
   const agents = useHive((s) => s.agents);
+  const channel = useHive((s) => s.channels[channelId]);
+  // The draft lives in the store, keyed by channel. It used to be component
+  // state, and the component was remounted on every channel switch, so
+  // clicking another channel to check something threw away what you were
+  // halfway through typing.
+  const draft = useHive((s) => s.drafts[channelId] ?? '');
+  const setDraft = useHive((s) => s.setDraft);
+  const scrollTops = useHive((s) => s.scrollTops);
+  const setScrollTop = useHive((s) => s.setScrollTop);
+
   // An agent whose status line says it is answering is, in chat terms, typing.
   const answering = Object.values(agents).filter(
     (a) => a.status === 'working' && a.activity?.startsWith('answering'),
   );
-  const [draft, setDraft] = useState('');
+
   const [pendingFiles, setPendingFiles] = useState<Attachment[]>([]);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const bottom = useRef<HTMLDivElement>(null);
+  const [atBottom, setAtBottom] = useState(true);
+  const [newBelow, setNewBelow] = useState(0);
+
+  const listRef = useRef<HTMLDivElement>(null);
   const box = useRef<HTMLTextAreaElement>(null);
+  const lastCount = useRef(messages.length);
 
   useEffect(() => {
     if (loaded) return;
     void api
       .messages(channelId)
       .then(({ messages: list }) => useHive.getState().ingestMessages(channelId, list))
-      .catch((err) => setError(String(err)));
+      .catch((err: unknown) => setError(String(err)));
   }, [channelId, loaded]);
 
+  /**
+   * Restore the scroll position for this channel before paint.
+   *
+   * `useLayoutEffect` rather than `useEffect`: with the latter the list renders
+   * at the top for one frame and then jumps, which reads as a flicker on every
+   * channel switch.
+   */
+  useLayoutEffect(() => {
+    const el = listRef.current;
+    if (!el) return;
+    const saved = scrollTops[channelId];
+    el.scrollTop = saved ?? el.scrollHeight;
+    setAtBottom(saved === undefined || el.scrollHeight - saved - el.clientHeight < STICK_THRESHOLD_PX);
+    setNewBelow(0);
+    // Rebase the counter the follow-the-bottom effect compares against.
+    // Without this, moving to a busier channel looks like a burst of arrivals
+    // and pops a "12 new messages" pill for messages that are simply older.
+    lastCount.current = messages.length;
+    // Restoring is per channel; re-running it when the saved value changes
+    // would fight the user's own scrolling.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [channelId]);
+
+  /**
+   * Follow new messages only when already at the bottom. Yanking someone who is
+   * reading back-scroll down to the newest message is the single most annoying
+   * thing a chat client does.
+   */
   useEffect(() => {
-    bottom.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages.length]);
+    const grew = messages.length > lastCount.current;
+    lastCount.current = messages.length;
+    if (!grew) return;
+    const el = listRef.current;
+    if (!el) return;
+    if (atBottom) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+    else setNewBelow((n) => n + 1);
+  }, [messages.length, atBottom]);
+
+  const onScroll = (): void => {
+    const el = listRef.current;
+    if (!el) return;
+    const bottom = el.scrollHeight - el.scrollTop - el.clientHeight < STICK_THRESHOLD_PX;
+    setAtBottom(bottom);
+    if (bottom) setNewBelow(0);
+    setScrollTop(channelId, el.scrollTop);
+  };
+
+  const jumpToBottom = (): void => {
+    const el = listRef.current;
+    if (!el) return;
+    el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+    setNewBelow(0);
+  };
 
   const send = (): void => {
     const body = draft.trim();
@@ -55,11 +122,15 @@ export function Chat({ channelId }: Props): JSX.Element {
     void api
       .send(channelId, body || '(attachment)', mentions, pendingFiles)
       .then(() => {
-        setDraft('');
+        setDraft(channelId, '');
         setPendingFiles([]);
-        box.current?.focus();
+        if (box.current) {
+          box.current.style.height = 'auto';
+          box.current.focus();
+        }
+        setAtBottom(true);
       })
-      .catch((err) => setError(String(err)))
+      .catch((err: unknown) => setError(String(err)))
       .finally(() => setSending(false));
   };
 
@@ -79,14 +150,25 @@ export function Chat({ channelId }: Props): JSX.Element {
           },
         ]),
       )
-      .catch((err) => setError(String(err)));
+      .catch((err: unknown) => setError(String(err)));
   };
 
   return (
     <>
-      <div className="messages">
+      <div className="messages" ref={listRef} onScroll={onScroll}>
         {messages.length === 0 && (
-          <div className="empty">No messages here yet. Say something to the fleet.</div>
+          <div className="empty">
+            <Icon name="chat" size={26} />
+            <div style={{ marginTop: 10 }}>Nothing here yet.</div>
+            {channel?.description ? (
+              <div className="empty-purpose">{channel.description}</div>
+            ) : (
+              <div style={{ fontSize: 12.5, marginTop: 6 }}>
+                Say something to the fleet — or give this channel a purpose so agents know what it
+                is for.
+              </div>
+            )}
+          </div>
         )}
         {messages.map((message, index) => {
           const previous = messages[index - 1];
@@ -94,25 +176,39 @@ export function Chat({ channelId }: Props): JSX.Element {
             !previous ||
             previous.authorId !== message.authorId ||
             message.ts - previous.ts > GROUP_WINDOW_MS;
-          return <MessageRow key={message.id} message={message} lead={lead} />;
+          const dayBreak = previous ? !sameDay(previous.ts, message.ts) : false;
+          return (
+            <div key={message.id}>
+              {dayBreak && (
+                <div className="day-break">
+                  <span>{new Date(message.ts).toLocaleDateString()}</span>
+                </div>
+              )}
+              <MessageRow message={message} lead={lead} fresh={index >= messages.length - 1} />
+            </div>
+          );
         })}
-        <div ref={bottom} />
       </div>
+
+      {newBelow > 0 && (
+        <button className="jump-btn" onClick={jumpToBottom}>
+          <Icon name="arrow-down" size={14} />
+          {newBelow} new {newBelow === 1 ? 'message' : 'messages'}
+        </button>
+      )}
 
       <div className="composer">
         {pendingFiles.length > 0 && (
           <div className="chips">
             {pendingFiles.map((f) => (
               <span key={f.fileId} className="chip">
-                📎 {f.filename} · {bytes(f.size)}
+                <Icon name="paperclip" size={12} /> {f.filename} · {bytes(f.size)}
                 <button
-                  className="icon-btn"
-                  style={{ fontSize: 14 }}
-                  onClick={() =>
-                    setPendingFiles((prev) => prev.filter((p) => p.fileId !== f.fileId))
-                  }
+                  className="bare"
+                  aria-label={`Remove ${f.filename}`}
+                  onClick={() => setPendingFiles((prev) => prev.filter((p) => p.fileId !== f.fileId))}
                 >
-                  ✕
+                  <Icon name="close" size={13} />
                 </button>
               </span>
             ))}
@@ -120,11 +216,10 @@ export function Chat({ channelId }: Props): JSX.Element {
         )}
 
         <div className="composer-box">
-          <label className="bare" title="Attach a file" style={{ cursor: 'pointer', padding: '6px 4px' }}>
-            <Icon name="paperclip" size={18} />
+          <label className="attach-btn" title="Attach a file">
+            <Icon name="paperclip" size={19} />
             <input
               type="file"
-              style={{ display: 'none' }}
               onChange={(e) => {
                 const file = e.target.files?.[0];
                 if (file) upload(file);
@@ -136,23 +231,29 @@ export function Chat({ channelId }: Props): JSX.Element {
             ref={box}
             rows={1}
             value={draft}
-            placeholder="Message the fleet — @name to address one agent, @all for everyone"
+            placeholder="Message the fleet — @name for one agent, @all for everyone"
             onChange={(e) => {
-              setDraft(e.target.value);
+              setDraft(channelId, e.target.value);
               // Grow with content up to the CSS max-height, then scroll.
               e.target.style.height = 'auto';
-              e.target.style.height = `${Math.min(e.target.scrollHeight, 220)}px`;
+              e.target.style.height = `${Math.min(e.target.scrollHeight, 180)}px`;
             }}
             onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.shiftKey) {
+              // Enter sends on a pointer device. On a touch keyboard Enter is
+              // the only way to get a newline, so it must not send there.
+              if (e.key === 'Enter' && !e.shiftKey && !isTouch()) {
                 e.preventDefault();
                 send();
               }
             }}
           />
-          <button className="primary tiny" disabled={sending} onClick={send} title="Send">
-            <Icon name="send" size={14} />
-            Send
+          <button
+            className="send-btn"
+            disabled={sending || (!draft.trim() && pendingFiles.length === 0)}
+            onClick={send}
+            aria-label="Send"
+          >
+            <Icon name="send" size={16} />
           </button>
         </div>
 
@@ -167,7 +268,9 @@ export function Chat({ channelId }: Props): JSX.Element {
               {answering.map((a) => a.name).join(', ')} {answering.length > 1 ? 'are' : 'is'} typing
             </span>
           ) : (
-            'Enter to send · Shift+Enter for a new line · @name to address one agent'
+            <span className="hide-sm">
+              Enter to send · Shift+Enter for a new line · @name to address one agent
+            </span>
           )}
         </div>
       </div>
@@ -175,17 +278,38 @@ export function Chat({ channelId }: Props): JSX.Element {
   );
 }
 
-function MessageRow({ message, lead }: { message: Message; lead: boolean }): JSX.Element {
+/** Touch-primary devices send with the button, not with the Enter key. */
+function isTouch(): boolean {
+  return window.matchMedia('(pointer: coarse)').matches;
+}
+
+function sameDay(a: number, b: number): boolean {
+  const x = new Date(a);
+  const y = new Date(b);
+  return (
+    x.getDate() === y.getDate() && x.getMonth() === y.getMonth() && x.getFullYear() === y.getFullYear()
+  );
+}
+
+function MessageRow({
+  message,
+  lead,
+  fresh,
+}: {
+  message: Message;
+  lead: boolean;
+  fresh: boolean;
+}): JSX.Element {
   const color = avatarColor(message.authorName);
   return (
-    <div className={`msg ${lead ? 'lead' : ''}`}>
+    <div className={`msg ${lead ? 'lead' : ''} ${fresh ? 'enter' : ''}`}>
       <div className="gutter">
         {lead ? (
           <div className="avatar" style={{ background: color }}>
             {initials(message.authorName)}
           </div>
         ) : (
-          <span className="timestamp-hover">{clock(message.ts)}</span>
+          <span className="stamp-hover">{clock(message.ts)}</span>
         )}
       </div>
       <div style={{ minWidth: 0 }}>
@@ -205,7 +329,8 @@ function MessageRow({ message, lead }: { message: Message; lead: boolean }): JSX
         </div>
         {message.attachments.map((a) => (
           <a key={a.fileId} className="attach" href={`/api/files/${a.fileId}`} download>
-            📎 <span>{a.filename}</span>
+            <Icon name="paperclip" size={15} />
+            <span>{a.filename}</span>
             <span className="muted">{bytes(a.size)}</span>
           </a>
         ))}

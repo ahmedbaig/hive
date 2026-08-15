@@ -252,6 +252,19 @@ export const fileBytes = new Counter({
   registers: [registry],
 });
 
+export const filesDeduped = new Counter({
+  name: 'hive_files_deduped_total',
+  help: 'Uploads whose bytes were already stored under the same sha256.',
+  registers: [registry],
+});
+
+export const contextUsedRatio = new Gauge({
+  name: 'hive_agent_context_ratio',
+  help: 'Fraction of the context window an agent was holding at its last turn.',
+  labelNames: ['agent'] as const,
+  registers: [registry],
+});
+
 export const councilsByPhase = new Gauge({
   name: 'hive_councils',
   help: 'Councils in each phase.',

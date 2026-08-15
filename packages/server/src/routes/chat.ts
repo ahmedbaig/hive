@@ -3,11 +3,16 @@ import { z } from 'zod';
 import { getAgent, listAgents } from '../services/agents.js';
 import {
   createChannel,
+  deleteChannel,
   ensureDirectChannel,
   joinChannel,
   leaveChannel,
   listChannels,
+  renderChannelContext,
   resolveChannel,
+  restoreChannel,
+  setArchived,
+  updateChannel,
 } from '../services/channels.js';
 import { inboxCount, listMessages, postMessage, readInbox } from '../services/messages.js';
 import { actorFrom } from './auth.js';
@@ -32,14 +37,22 @@ const PostBody = z.object({
 });
 
 export async function chatRoutes(app: FastifyInstance): Promise<void> {
-  app.get('/api/channels', async () => ({ channels: await listChannels() }));
+  app.get('/api/channels', async (req) => {
+    const { includeDeleted } = req.query as { includeDeleted?: string };
+    return {
+      channels: await listChannels({
+        includeDeleted: includeDeleted === '1' || includeDeleted === 'true',
+      }),
+    };
+  });
 
   app.post('/api/channels', async (req, reply) => {
     const parsed = z
       .object({
         name: z.string().min(1).max(80),
         kind: z.enum(['group', 'direct', 'council', 'system']).default('group'),
-        topic: z.string().default(''),
+        topic: z.string().max(300).default(''),
+        description: z.string().max(2_000).default(''),
         members: z.array(z.string()).default([]),
       })
       .safeParse(req.body);
@@ -47,6 +60,70 @@ export async function chatRoutes(app: FastifyInstance): Promise<void> {
     const actor = actorFrom(req);
     const channel = await createChannel({ ...parsed.data, createdBy: actor.name });
     return { channel };
+  });
+
+  app.patch('/api/channels/:id', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const parsed = z
+      .object({
+        name: z.string().min(1).max(80).optional(),
+        topic: z.string().max(300).optional(),
+        description: z.string().max(2_000).optional(),
+      })
+      .safeParse(req.body);
+    if (!parsed.success) return reply.code(400).send({ error: 'invalid patch' });
+    const existing = await resolveChannel(id);
+    if (!existing) return reply.code(404).send({ error: 'unknown channel' });
+    const channel = await updateChannel(existing.id, parsed.data);
+    return { channel };
+  });
+
+  app.post('/api/channels/:id/archive', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const parsed = z.object({ archived: z.boolean().default(true) }).safeParse(req.body ?? {});
+    if (!parsed.success) return reply.code(400).send({ error: 'invalid request' });
+    const existing = await resolveChannel(id);
+    if (!existing) return reply.code(404).send({ error: 'unknown channel' });
+    const channel = await setArchived(existing.id, parsed.data.archived);
+    return { channel };
+  });
+
+  /**
+   * Soft delete. Answers 409 for the built-in channels rather than pretending
+   * to succeed — the fleet's plumbing addresses those by name.
+   */
+  app.delete('/api/channels/:id', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const existing = await resolveChannel(id);
+    if (!existing) return reply.code(404).send({ error: 'unknown channel' });
+    const result = await deleteChannel(existing.id);
+    if (result === 'protected') {
+      return reply.code(409).send({ error: 'built-in channels cannot be deleted, only archived' });
+    }
+    if (!result) return reply.code(404).send({ error: 'unknown channel' });
+    return { channel: result };
+  });
+
+  app.post('/api/channels/:id/restore', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const channel = await restoreChannel(id);
+    if (!channel) return reply.code(404).send({ error: 'unknown channel' });
+    return { channel };
+  });
+
+  /**
+   * The standing context block for a channel, rendered server-side so every
+   * agent path states the purpose with the same wording.
+   */
+  app.get('/api/channels/:id/context', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const channel = await resolveChannel(id);
+    if (!channel) return reply.code(404).send({ error: 'unknown channel' });
+    const roster = await listAgents();
+    const participants = roster
+      .filter((a) => channel.members.includes(a.id))
+      .map((a) => ({ name: a.name, host: a.host, role: a.role }));
+    return { channel, context: renderChannelContext(channel, participants) };
   });
 
   /** Open (or reuse) a direct thread between two agents. */

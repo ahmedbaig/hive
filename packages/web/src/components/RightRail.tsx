@@ -50,6 +50,13 @@ export function RightRail({
         <span>Approvals</span>
         <span className="spacer" />
         {pending.length > 0 && <span className="approval-tool">{pending.length}</span>}
+        <button
+          className="icon-btn only-narrow"
+          aria-label="Close"
+          onClick={() => useHive.getState().setRail(false)}
+        >
+          <Icon name="close" size={18} />
+        </button>
       </div>
 
       <div className="right-body">

@@ -14,7 +14,9 @@ import type {
   AgentRecord,
   Channel,
   Council,
+  FileChunk,
   FileTransfer,
+  FleetStats,
   Message,
 } from '@hive/shared';
 import { z } from 'zod';
@@ -94,20 +96,81 @@ server.registerTool(
   'hive_channels',
   {
     title: 'List channels',
-    description: 'List hive chat channels: id, name, kind (group/direct/council/system) and topic.',
-    inputSchema: {},
+    description:
+      'List hive chat channels with what each one is for: id, name, kind (group/direct/council/system), ' +
+      'purpose (the standing charter) and topic (the current focus). Read the purpose before posting — ' +
+      'it is what the channel is actually for.',
+    inputSchema: {
+      includeArchived: z.boolean().default(false).describe('Include archived channels'),
+    },
   },
-  async () => {
+  async ({ includeArchived }) => {
     try {
       await ensureIdentity();
       const { channels } = await hiveFetch<{ channels: Channel[] }>('/api/channels');
+      const list = includeArchived ? channels : channels.filter((c) => !c.archived);
       return text(
         JSON.stringify(
-          channels.map((c) => ({ id: c.id, name: c.name, kind: c.kind, topic: c.topic })),
+          list.map((c) => ({
+            id: c.id,
+            name: c.name,
+            kind: c.kind,
+            purpose: c.description,
+            topic: c.topic,
+            archived: c.archived,
+          })),
           null,
           2,
         ),
       );
+    } catch (err) {
+      return fail(err);
+    }
+  },
+);
+
+server.registerTool(
+  'hive_channel_context',
+  {
+    title: 'What is this channel for',
+    description:
+      'Return the standing context block for a channel — its purpose, current topic and participants. ' +
+      'Call this before answering in a channel you have not spoken in, so your reply is on-topic.',
+    inputSchema: { channel: z.string().describe('Channel id or name') },
+  },
+  async ({ channel }) => {
+    try {
+      await ensureIdentity();
+      const { context } = await hiveFetch<{ context: string }>(
+        `/api/channels/${encodeURIComponent(channel)}/context`,
+      );
+      return text(context);
+    } catch (err) {
+      return fail(err);
+    }
+  },
+);
+
+server.registerTool(
+  'hive_channel_topic',
+  {
+    title: 'Set the current topic of a channel',
+    description:
+      "Update a channel's current topic — what the fleet is working on in it right now. The purpose " +
+      '(the standing charter) is the operator\'s to set and is deliberately not editable here.',
+    inputSchema: {
+      channel: z.string().describe('Channel id or name'),
+      topic: z.string().max(300).describe('Short line describing the current focus'),
+    },
+  },
+  async ({ channel, topic }) => {
+    try {
+      await ensureIdentity();
+      await hiveFetch(`/api/channels/${encodeURIComponent(channel)}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ topic }),
+      });
+      return text(`topic set on ${channel}`);
     } catch (err) {
       return fail(err);
     }
@@ -149,25 +212,36 @@ server.registerTool(
   'hive_read',
   {
     title: 'Read channel history',
-    description: 'Read recent messages from a hive channel, oldest first.',
+    description:
+      'Read recent messages from a hive channel, oldest first. The channel\'s purpose and current ' +
+      'topic are included first, so you know what the conversation is for before you read it.',
     inputSchema: {
       channel: z.string().default('lobby').describe('Channel id or name'),
       limit: z.number().int().min(1).max(200).default(50),
+      withContext: z.boolean().default(true).describe('Prepend the channel purpose block'),
     },
   },
-  async ({ channel, limit }) => {
+  async ({ channel, limit, withContext }) => {
     try {
       await ensureIdentity();
-      const { messages } = await hiveFetch<{ messages: Message[] }>(
-        `/api/channels/${encodeURIComponent(channel)}/messages?limit=${limit}`,
-      );
-      return text(
+      const [{ messages }, context] = await Promise.all([
+        hiveFetch<{ messages: Message[] }>(
+          `/api/channels/${encodeURIComponent(channel)}/messages?limit=${limit}`,
+        ),
+        withContext
+          ? hiveFetch<{ context: string }>(`/api/channels/${encodeURIComponent(channel)}/context`)
+              .then((r) => r.context)
+              // The transcript is the point; a missing charter must not fail the read.
+              .catch(() => '')
+          : Promise.resolve(''),
+      ]);
+      const body =
         messages.length === 0
           ? '(no messages)'
           : messages
               .map((m) => `[${new Date(m.ts).toISOString()}] ${m.authorName}: ${m.body}`)
-              .join('\n'),
-      );
+              .join('\n');
+      return text(context ? `${context}\n\n---\n\n${body}` : body);
     } catch (err) {
       return fail(err);
     }
@@ -302,6 +376,68 @@ server.registerTool(
       const buffer = Buffer.from(await res.arrayBuffer());
       await writeFile(destination, buffer);
       return text(`wrote ${buffer.length} bytes to ${destination}`);
+    } catch (err) {
+      return fail(err);
+    }
+  },
+);
+
+server.registerTool(
+  'hive_file_read',
+  {
+    title: 'Read part of a shared file',
+    description:
+      'Read a window of a shared file as text, without downloading it. Use this instead of ' +
+      'hive_fetch_file when you only need to look at the content: one large log read whole costs ' +
+      'more context than the answer you are after. Page through with `offset` until `eof` is true.',
+    inputSchema: {
+      fileId: z.string().describe('File id from hive_list_files or a message attachment'),
+      offset: z.number().int().min(0).default(0).describe('Byte offset to start at'),
+      limit: z
+        .number()
+        .int()
+        .min(1)
+        .max(256 * 1024)
+        .default(32_768)
+        .describe('Bytes to read, capped server-side'),
+    },
+  },
+  async ({ fileId, offset, limit }) => {
+    try {
+      await ensureIdentity();
+      const { chunk } = await hiveFetch<{ chunk: FileChunk }>(
+        `/api/files/${encodeURIComponent(fileId)}/range?offset=${offset}&limit=${limit}`,
+      );
+      if (chunk.text === null) {
+        return text(
+          `${chunk.filename}: bytes ${chunk.offset}–${chunk.offset + chunk.length} of ${chunk.size} ` +
+            'are binary, not text. Use hive_fetch_file to write it to disk instead.',
+        );
+      }
+      const header =
+        `${chunk.filename} · bytes ${chunk.offset}–${chunk.offset + chunk.length} of ${chunk.size}` +
+        `${chunk.eof ? ' · end of file' : ` · continue at offset ${chunk.offset + chunk.length}`}`;
+      return text(`${header}\n\n${chunk.text}`);
+    } catch (err) {
+      return fail(err);
+    }
+  },
+);
+
+server.registerTool(
+  'hive_file_delete',
+  {
+    title: 'Remove a shared file',
+    description:
+      'Soft-delete a shared file so it stops appearing in the fleet\'s file list. The bytes are kept ' +
+      'server-side, so this is reversible by the operator.',
+    inputSchema: { fileId: z.string() },
+  },
+  async ({ fileId }) => {
+    try {
+      await ensureIdentity();
+      await hiveFetch(`/api/files/${encodeURIComponent(fileId)}`, { method: 'DELETE' });
+      return text(`removed ${fileId}`);
     } catch (err) {
       return fail(err);
     }
@@ -557,6 +693,55 @@ server.registerTool(
       const me = await ensureIdentity();
       await hivePost(`/api/agents/${me.agentId}/heartbeat`, { status, activity });
       return text('status updated');
+    } catch (err) {
+      return fail(err);
+    }
+  },
+);
+
+server.registerTool(
+  'hive_stats',
+  {
+    title: 'Fleet context and token usage',
+    description:
+      'How much context each machine in the fleet is holding, and what the fleet has spent in the ' +
+      'current rolling window. Useful before waking another agent: a machine already near its ' +
+      'context ceiling will do a worse job of a large task than one that just started.',
+    inputSchema: {},
+  },
+  async () => {
+    try {
+      await ensureIdentity();
+      const stats = await hiveFetch<FleetStats>('/api/stats');
+      return text(
+        JSON.stringify(
+          {
+            window: {
+              hours: Math.round(stats.window.windowMs / 3_600_000),
+              totalTokens: stats.window.totalTokens,
+              turns: stats.window.turns,
+              resetsAt: stats.window.resetsAt
+                ? new Date(stats.window.resetsAt).toISOString()
+                : null,
+              note: 'derived from observed spend, not from API rate-limit headers',
+            },
+            memory: stats.memory,
+            agents: stats.agents.map((a) => ({
+              name: a.agentName,
+              status: a.status,
+              contextUsed: a.stats?.contextUsed ?? null,
+              contextMax: a.stats?.contextMax ?? null,
+              contextPct: a.stats
+                ? Math.round((a.stats.contextUsed / a.stats.contextMax) * 100)
+                : null,
+              model: a.stats?.model ?? null,
+              windowTokens: a.window.totalTokens,
+            })),
+          },
+          null,
+          2,
+        ),
+      );
     } catch (err) {
       return fail(err);
     }
