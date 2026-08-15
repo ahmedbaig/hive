@@ -22,6 +22,23 @@ const GROUP_WINDOW_MS = 5 * 60 * 1000;
 /** How close to the bottom still counts as "following the conversation". */
 const STICK_THRESHOLD_PX = 120;
 
+/** Most mention candidates shown at once; the list is a hint, not a directory. */
+const MENTION_LIMIT = 8;
+
+/**
+ * The `@…` token being typed immediately before the caret, if any.
+ *
+ * Only a token that starts the line or follows whitespace counts, so an email
+ * address or a `foo@bar` path does not open the picker mid-word.
+ */
+function mentionToken(value: string, caret: number): { start: number; query: string } | null {
+  const before = value.slice(0, caret);
+  const match = /(?:^|\s)@([\w.-]*)$/.exec(before);
+  if (!match) return null;
+  const query = match[1] ?? '';
+  return { start: caret - query.length - 1, query };
+}
+
 export function Chat({ channelId }: Props): JSX.Element {
   const messages = useHive((s) => s.messages[channelId] ?? NO_MESSAGES);
   const loaded = useHive((s) => s.loadedChannels.has(channelId));
@@ -40,6 +57,10 @@ export function Chat({ channelId }: Props): JSX.Element {
   const answering = Object.values(agents).filter(
     (a) => a.status === 'working' && a.activity?.startsWith('answering'),
   );
+
+  // The `@…` picker. `null` when the caret is not inside a mention token.
+  const [mention, setMention] = useState<{ start: number; query: string } | null>(null);
+  const [mentionPick, setMentionPick] = useState(0);
 
   const [pendingFiles, setPendingFiles] = useState<Attachment[]>([]);
   const [sending, setSending] = useState(false);
@@ -73,6 +94,7 @@ export function Chat({ channelId }: Props): JSX.Element {
     el.scrollTop = saved ?? el.scrollHeight;
     setAtBottom(saved === undefined || el.scrollHeight - saved - el.clientHeight < STICK_THRESHOLD_PX);
     setNewBelow(0);
+    setMention(null);
     // Rebase the counter the follow-the-bottom effect compares against.
     // Without this, moving to a busier channel looks like a burst of arrivals
     // and pops a "12 new messages" pill for messages that are simply older.
@@ -113,6 +135,51 @@ export function Chat({ channelId }: Props): JSX.Element {
     setNewBelow(0);
   };
 
+  /**
+   * Mention candidates for the token being typed. `all` is listed first because
+   * broadcasting is the one target that has no name to remember.
+   */
+  const roster: Array<{ name: string; hint: string; status: string }> = [
+    { name: 'all', hint: 'everyone in this channel', status: 'broadcast' },
+    ...Object.values(agents)
+      .slice()
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .map((a) => ({ name: a.name, hint: a.activity || a.host, status: a.status })),
+  ];
+  const candidates =
+    mention === null
+      ? []
+      : roster
+          .filter((c) => c.name.toLowerCase().startsWith(mention.query.toLowerCase()))
+          .slice(0, MENTION_LIMIT);
+  // An open picker with nothing in it must not swallow Enter.
+  const picking = mention !== null && candidates.length > 0;
+
+  /** Replace the half-typed token with `@name ` and put the caret after it. */
+  const acceptMention = (name: string): void => {
+    if (mention === null) return;
+    const el = box.current;
+    const caret = el ? el.selectionStart : mention.start + mention.query.length + 1;
+    const next = `${draft.slice(0, mention.start)}@${name} ${draft.slice(caret)}`;
+    const at = mention.start + name.length + 2;
+    setDraft(channelId, next);
+    setMention(null);
+    setMentionPick(0);
+    requestAnimationFrame(() => {
+      const box2 = box.current;
+      if (!box2) return;
+      box2.focus();
+      box2.setSelectionRange(at, at);
+    });
+  };
+
+  /** Recompute the picker from wherever the caret now is. */
+  const syncMention = (el: HTMLTextAreaElement): void => {
+    const found = mentionToken(el.value, el.selectionStart);
+    setMention(found);
+    setMentionPick(0);
+  };
+
   const send = (): void => {
     const body = draft.trim();
     if ((!body && pendingFiles.length === 0) || sending) return;
@@ -123,6 +190,7 @@ export function Chat({ channelId }: Props): JSX.Element {
       .send(channelId, body || '(attachment)', mentions, pendingFiles)
       .then(() => {
         setDraft(channelId, '');
+        setMention(null);
         setPendingFiles([]);
         if (box.current) {
           box.current.style.height = 'auto';
@@ -215,6 +283,36 @@ export function Chat({ channelId }: Props): JSX.Element {
           </div>
         )}
 
+        {picking && (
+          <div className="mention-pop" role="listbox" aria-label="Mention an agent">
+            {candidates.map((c, i) => (
+              <button
+                key={c.name}
+                role="option"
+                aria-selected={i === mentionPick}
+                className={`mention-row ${i === mentionPick ? 'on' : ''}`}
+                // mousedown, not click: the textarea must not lose focus and
+                // close the picker before the choice is registered.
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  acceptMention(c.name);
+                }}
+                onMouseEnter={() => setMentionPick(i)}
+              >
+                <span
+                  className="mention-dot"
+                  style={{ background: c.name === 'all' ? 'var(--accent)' : avatarColor(c.name) }}
+                >
+                  {c.name === 'all' ? '@' : initials(c.name)}
+                </span>
+                <span className="mention-name">@{c.name}</span>
+                <span className="mention-hint">{c.hint}</span>
+              </button>
+            ))}
+            <div className="mention-foot">↑↓ to move · Enter or Tab to pick · Esc to dismiss</div>
+          </div>
+        )}
+
         <div className="composer-box">
           <label className="attach-btn" title="Attach a file">
             <Icon name="paperclip" size={19} />
@@ -234,11 +332,42 @@ export function Chat({ channelId }: Props): JSX.Element {
             placeholder="Message the fleet — @name for one agent, @all for everyone"
             onChange={(e) => {
               setDraft(channelId, e.target.value);
+              syncMention(e.target);
               // Grow with content up to the CSS max-height, then scroll.
               e.target.style.height = 'auto';
               e.target.style.height = `${Math.min(e.target.scrollHeight, 180)}px`;
             }}
+            // Arrow keys and clicks move the caret out of (or into) a token
+            // without changing the text, so the picker is resynced here too.
+            onKeyUp={(e) => {
+              if (e.key.startsWith('Arrow') || e.key === 'Home' || e.key === 'End')
+                syncMention(e.currentTarget);
+            }}
+            onClick={(e) => syncMention(e.currentTarget)}
+            onBlur={() => setMention(null)}
             onKeyDown={(e) => {
+              if (picking) {
+                if (e.key === 'ArrowDown') {
+                  e.preventDefault();
+                  setMentionPick((i) => (i + 1) % candidates.length);
+                  return;
+                }
+                if (e.key === 'ArrowUp') {
+                  e.preventDefault();
+                  setMentionPick((i) => (i - 1 + candidates.length) % candidates.length);
+                  return;
+                }
+                if (e.key === 'Enter' || e.key === 'Tab') {
+                  e.preventDefault();
+                  acceptMention(candidates[mentionPick]?.name ?? candidates[0]!.name);
+                  return;
+                }
+                if (e.key === 'Escape') {
+                  e.preventDefault();
+                  setMention(null);
+                  return;
+                }
+              }
               // Enter sends on a pointer device. On a touch keyboard Enter is
               // the only way to get a newline, so it must not send there.
               if (e.key === 'Enter' && !e.shiftKey && !isTouch()) {

@@ -140,11 +140,23 @@ const REPLY_ENABLED = process.env.HIVE_REPLY !== '0';
  * makes the agent look mute.
  */
 const REPLY_TIMEOUT_MS = Number(process.env.HIVE_REPLY_TIMEOUT_MS || 0);
-/** Channels the agent answers in even without being named. */
-const REPLY_CHANNELS = (process.env.HIVE_REPLY_CHANNELS || 'lobby,ops')
+/**
+ * Channels the agent answers in even without being named.
+ *
+ * Defaults to `*` — every channel, including ones the operator creates later.
+ * An allowlist of built-in names meant a message typed in a fresh channel was
+ * silently dropped, which reads as a dead fleet rather than as a policy. Set
+ * `HIVE_REPLY_CHANNELS=lobby,ops` to go back to a fixed list.
+ */
+const REPLY_CHANNELS = (process.env.HIVE_REPLY_CHANNELS || '*')
   .split(',')
   .map((c) => c.trim())
   .filter(Boolean);
+
+/** True when this daemon answers unnamed human messages in `channelName`. */
+function isOpenChannel(channelName: string): boolean {
+  return REPLY_CHANNELS.includes('*') || REPLY_CHANNELS.includes(channelName);
+}
 
 let replying = false;
 
@@ -253,9 +265,11 @@ function shouldReply(message: ChatMessage): ReplyDecision {
   // Human message in a general channel with nobody else named: answer it.
   const channelName = channelNames.get(message.channelId) ?? message.channelId;
   const addressedToSomeoneElse = message.mentions.length > 0;
-  if (!addressedToSomeoneElse && REPLY_CHANNELS.includes(channelName))
+  if (!addressedToSomeoneElse && isOpenChannel(channelName))
     return { reply: true, reason: 'open_channel', report: true };
-  return { reply: false, reason: 'not_addressed', report: false };
+  // Reported: "someone else was named" is the only way an unanswered human
+  // message is normal, and it should still be visible when it is not.
+  return { reply: false, reason: 'not_addressed', report: true };
 }
 
 /**

@@ -1170,6 +1170,72 @@ textarea {
 .composer {
   flex: none;
   padding: 4px var(--pad) calc(12px + var(--safe-b));
+  position: relative;
+}
+
+/* @-mention picker. Anchored to the composer, opening upward so it never
+   covers the message the operator is answering. */
+.mention-pop {
+  position: absolute;
+  bottom: calc(100% - 4px);
+  left: var(--pad);
+  right: var(--pad);
+  max-width: 420px;
+  z-index: 40;
+  background: var(--bg-float);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  box-shadow: 0 12px 32px rgb(0 0 0 / 45%);
+  padding: 4px;
+  overflow: hidden;
+}
+.mention-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border: none;
+  background: transparent;
+  border-radius: var(--r);
+  text-align: left;
+  cursor: pointer;
+  min-height: 0;
+}
+.mention-row.on {
+  background: var(--bg-hover);
+}
+.mention-dot {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  font-size: 10px;
+  font-weight: 700;
+  color: #0a0e1c;
+}
+.mention-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg);
+}
+.mention-hint {
+  font-size: 11.5px;
+  color: var(--fg-mute);
+  margin-left: auto;
+  padding-left: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mention-foot {
+  font-size: 11px;
+  color: var(--fg-mute);
+  padding: 6px 8px 2px;
+  border-top: 1px solid var(--line);
+  margin-top: 4px;
 }
 .composer-box {
   background: var(--bg-raise);
